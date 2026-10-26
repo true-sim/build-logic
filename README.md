@@ -42,9 +42,17 @@ The shared catalog ([catalog/libs.versions.toml](catalog/libs.versions.toml)) de
 organization-wide defaults:
 
 - **Lombok** for `compileOnly`, `annotationProcessor`, `testCompileOnly` and `testAnnotationProcessor`
-- **SLF4J API** for `implementation`
-- **Logback** for `runtimeOnly`
+- **SLF4J API** for `implementation`: the logging API all code uses
+- **Logback** for `testRuntimeOnly`, so test output is logged
 - **AssertJ** for `testImplementation`
+
+No logging backend is enforced at runtime. Applications choose one themselves, typically Logback:
+
+```kotlin
+dependencies {
+    runtimeOnly(truesim.logback.classic)
+}
+```
 
 To change them for everyone, edit that file and release a new version. To add more for a
 single repository, define the same bundle names in that repository's own
@@ -105,7 +113,7 @@ plugins {
 }
 
 dependencies {
-    // Lombok, SLF4J, Logback, AssertJ and JUnit are already there.
+    // Lombok, SLF4J, AssertJ and JUnit are already there.
     implementation(truesim.some.other.lib)
 }
 ```
