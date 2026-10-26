@@ -7,7 +7,7 @@ Shared Gradle convention plugins and version catalog for true-sim projects.
 | Plugin ID | Applies to | What it does |
 |---|---|---|
 | `truesim.settings` | `settings.gradle.kts` | Foojay toolchain resolver (auto-downloads JDKs), Maven Central, registers the shared `truesim` version catalog and installs the shared `lombok.config` |
-| `truesim.java-conventions` | any Java project | Java 27 toolchain, UTF-8, `-Xlint:all -parameters`, sources jar, reproducible archives, JUnit, **global dependencies**, **platform-independence check** |
+| `truesim.java-conventions` | any Java project | Java 27 toolchain, UTF-8, `-Xlint:all -parameters`, sources jar, reproducible archives, JUnit, **global dependencies**, **platform-independence check**, **coverage rule** |
 | `truesim.java-library-conventions` | libraries | Above + `java-library`, javadoc jar, publishing |
 | `truesim.application-conventions` | apps | Above + `application` |
 | `truesim.allocation-free` | strict modules | **Allocation-free check** at build time, plus `AllocationAssertions` for tests |
@@ -69,6 +69,18 @@ commons-lang3 = "org.apache.commons:commons-lang3:3.17.0"
 
 [bundles]
 global-implementation = ["commons-lang3"]
+```
+
+## Test coverage (all modules)
+
+Every module records JaCoCo coverage when its tests run (HTML and XML reports under
+`build/reports/jacoco`), and `check` fails when line or branch coverage is below the minimum.
+The default is 80%; raise or lower it per module:
+
+```kotlin
+coverage {
+    minimum = 1.0   // 100% of lines and branches
+}
 ```
 
 ## Platform independence (all modules)

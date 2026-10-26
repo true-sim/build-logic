@@ -1,11 +1,13 @@
 // Base conventions for every Java project: toolchain, compiler flags, JUnit, global dependencies
 // and the platform-independence check.
 import com.truesim.build.strict.BuildLogic
+import com.truesim.build.strict.CoverageExtension
 import com.truesim.build.strict.DeterminismCheck
 import com.truesim.build.strict.DeterministicExtension
 
 plugins {
     java
+    jacoco
 }
 
 // Override per project with `truesim.java.version=<n>` in gradle.properties.
@@ -99,4 +101,44 @@ val checkPlatformIndependence = tasks.register<DeterminismCheck>("checkPlatformI
 
 tasks.named("check") {
     dependsOn(checkPlatformIndependence)
+}
+
+// Test coverage: JaCoCo reports for every test run, and `check` fails below the minimum line and branch coverage.
+// Raise it per module with `coverage { minimum = 1.0 }`.
+val coverage = extensions.create<CoverageExtension>("coverage").apply {
+    minimum.convention(0.8)
+}
+
+jacoco {
+    toolVersion = "0.8.16"
+}
+
+tasks.named<Test>("test") {
+    finalizedBy(tasks.named("jacocoTestReport"))
+}
+
+tasks.named<JacocoReport>("jacocoTestReport") {
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
+tasks.named<JacocoCoverageVerification>("jacocoTestCoverageVerification") {
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                minimum = coverage.minimum.get().toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                minimum = coverage.minimum.get().toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(tasks.named("jacocoTestCoverageVerification"))
 }
