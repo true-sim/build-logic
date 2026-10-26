@@ -6,7 +6,7 @@ Shared Gradle convention plugins and version catalog for true-sim projects.
 
 | Plugin ID | Applies to | What it does |
 |---|---|---|
-| `truesim.settings` | `settings.gradle.kts` | Foojay toolchain resolver (auto-downloads JDKs), Maven Central, and registers the shared `truesim` version catalog |
+| `truesim.settings` | `settings.gradle.kts` | Foojay toolchain resolver (auto-downloads JDKs), Maven Central, registers the shared `truesim` version catalog and installs the shared `lombok.config` |
 | `truesim.java-conventions` | any Java project | Java 27 toolchain, UTF-8, `-Xlint:all -parameters`, sources jar, reproducible archives, JUnit, **global dependencies** |
 | `truesim.java-library-conventions` | libraries | Above + `java-library`, javadoc jar, publishing |
 | `truesim.application-conventions` | apps | Above + `application` |
@@ -18,6 +18,7 @@ Shared Gradle convention plugins and version catalog for true-sim projects.
 |---|---|---|
 | `truesim.java.version` | `27` | Java toolchain version |
 | `truesim.global-dependencies` | `true` | Set to `false` to skip global dependencies for a project |
+| `truesim.lombok-config` | `true` | Set to `false` to stop installing the shared `lombok.config` |
 | `truesim.github.repo` | root project name | GitHub repo used for the publishing URL |
 
 ## Global dependencies
@@ -65,6 +66,23 @@ commons-lang3 = "org.apache.commons:commons-lang3:3.17.0"
 [bundles]
 global-implementation = ["commons-lang3"]
 ```
+
+## Lombok configuration
+
+`truesim.settings` writes [config/lombok.config](config/lombok.config) to the root of every
+consuming build. Commit it: IDE Lombok plugins read it too. Highlights:
+
+- **Accessors follow the JavaBeans convention:** `getName()`, `setName(…)`, `isActive()`. No fluent
+  (`name()`) or chained setters, because Jackson, JPA/Hibernate, Spring and bean introspection
+  expect JavaBeans accessors. For fluent construction use records, `@Builder` or `@With`.
+- Generated code is marked `@lombok.Generated`, so coverage tools ignore it.
+- `@Slf4j` loggers are named `log`.
+- Warnings for `val` (use Java's `var`), experimental features and `@SneakyThrows`; `lombok.var`
+  is an error.
+
+The file is kept in sync with this repo while it starts with the "Managed by" header. To
+customize it for a whole repository, delete the header and the plugin leaves it alone. To
+override settings for one module, put a `lombok.config` in that module; nearer files win.
 
 ## Using it
 

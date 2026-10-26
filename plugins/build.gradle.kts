@@ -21,9 +21,12 @@ dependencies {
     implementation(libs.foojay.resolver)
 }
 
-// Ship the shared catalog inside the plugin jar so `truesim.settings` can register it.
+// Ship the shared catalog and lombok.config inside the plugin jar so `truesim.settings` can install them.
 tasks.processResources {
     from(layout.settingsDirectory.file("catalog/libs.versions.toml")) {
+        into("truesim")
+    }
+    from(layout.settingsDirectory.file("config/lombok.config")) {
         into("truesim")
     }
 }
