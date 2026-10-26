@@ -1,4 +1,9 @@
-// Base conventions for every Java project: toolchain, compiler flags, JUnit, global dependencies.
+// Base conventions for every Java project: toolchain, compiler flags, JUnit, global dependencies
+// and the platform-independence check.
+import com.truesim.build.strict.BuildLogic
+import com.truesim.build.strict.DeterminismCheck
+import com.truesim.build.strict.DeterministicExtension
+
 plugins {
     java
 }
@@ -71,4 +76,27 @@ if (providers.gradleProperty("truesim.global-dependencies").map(String::toBoolea
             }
         }
     }
+}
+
+// Platform independence: production code may not use java.lang.Math or java.lang.StrictMath, except their
+// exactly specified methods (abs, min, max, sqrt, floor, ...). StrictMath is allowed in @AllowStrictMath code.
+// Tests are not checked. Forbid more APIs with `deterministic { forbiddenApis.add("java.lang.System#nanoTime") }`.
+val deterministic = extensions.create<DeterministicExtension>("deterministic")
+
+dependencies {
+    "compileOnly"(BuildLogic.library("annotations"))
+}
+
+val checkPlatformIndependence = tasks.register<DeterminismCheck>("checkPlatformIndependence") {
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Checks that production code uses only platform-independent APIs."
+    classes.from(sourceSets.main.map { it.output.classesDirs })
+    forbiddenApis.addAll("java.lang.Math", "java.lang.StrictMath")
+    forbiddenApis.addAll(deterministic.forbiddenApis)
+    allowedApis = DeterminismCheck.EXACT_MATH
+    report = layout.buildDirectory.file("reports/truesim/platform-independence.txt")
+}
+
+tasks.named("check") {
+    dependsOn(checkPlatformIndependence)
 }

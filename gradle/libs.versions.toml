@@ -1,6 +1,8 @@
 # Versions used by build-logic itself.
 [versions]
 foojay-resolver = "1.0.0"
+asm = "9.11.1"
 
 [libraries]
 foojay-resolver = { module = "org.gradle.toolchains:foojay-resolver", version.ref = "foojay-resolver" }
+asm-tree = { module = "org.ow2.asm:asm-tree", version.ref = "asm" }

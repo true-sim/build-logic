@@ -19,10 +19,17 @@ kotlin {
 
 dependencies {
     implementation(libs.foojay.resolver)
+    implementation(libs.asm.tree)
 }
 
-// Ship the shared catalog and lombok.config inside the plugin jar so `truesim.settings` can install them.
+// Ship the shared catalog and lombok.config inside the plugin jar so `truesim.settings` can install them,
+// and record this build's coordinates so the plugins can add the matching support libraries.
 tasks.processResources {
+    val coordinates = mapOf("group" to project.group.toString(), "version" to project.version.toString())
+    inputs.properties(coordinates)
+    filesMatching("truesim/build-logic.properties") {
+        expand(coordinates)
+    }
     from(layout.settingsDirectory.file("catalog/libs.versions.toml")) {
         into("truesim")
     }

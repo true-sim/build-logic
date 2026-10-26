@@ -7,4 +7,4 @@ dependencyResolutionManagement {
     }
 }
 
-include("plugins", "catalog")
+include("plugins", "catalog", "annotations", "testing")
