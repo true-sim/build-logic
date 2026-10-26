@@ -1,7 +1,12 @@
+# Shared true-sim version catalog. Exposed to consumers as `truesim`
+# (created automatically by the `truesim.settings` plugin, or published as com.truesim.build:catalog).
+
 [versions]
-junit = "5.13.4"
-assertj = "3.27.6"
-slf4j = "2.0.17"
+junit = "6.1.3"
+assertj = "3.27.7"
+slf4j = "2.0.20"
+logback = "1.6.6"
+lombok = "1.18.48"
 
 [libraries]
 junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
@@ -9,6 +14,19 @@ junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 assertj-core = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 slf4j-api = { module = "org.slf4j:slf4j-api", version.ref = "slf4j" }
+logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+lombok = { module = "org.projectlombok:lombok", version.ref = "lombok" }
 
 [bundles]
 testing = ["junit-jupiter", "assertj-core"]
+
+# Global dependencies: every project using truesim.java-conventions gets each
+# `global-<configuration>` bundle added to that configuration. Any catalog in the
+# consuming build (e.g. `libs`) can define more `global-*` bundles; they are merged.
+global-implementation = ["slf4j-api"]
+global-compile-only = ["lombok"]
+global-annotation-processor = ["lombok"]
+global-runtime-only = ["logback-classic"]
+global-test-implementation = ["assertj-core"]
+global-test-compile-only = ["lombok"]
+global-test-annotation-processor = ["lombok"]

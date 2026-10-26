@@ -2,24 +2,61 @@
 
 Shared Gradle convention plugins and version catalog for true-sim projects.
 
-## Contents
+## Plugins
 
 | Plugin ID | Applies to | What it does |
 |---|---|---|
-| `truesim.settings` | `settings.gradle.kts` | Foojay toolchain resolver (auto-downloads JDKs) and Maven Central |
-| `truesim.java-conventions` | any Java project | Java toolchain (default 25), UTF-8, `-Xlint:all -parameters`, sources jar, reproducible archives, JUnit 5 |
+| `truesim.settings` | `settings.gradle.kts` | Foojay toolchain resolver (auto-downloads JDKs), Maven Central, and registers the shared `truesim` version catalog |
+| `truesim.java-conventions` | any Java project | Java 27 toolchain, UTF-8, `-Xlint:all -parameters`, sources jar, reproducible archives, JUnit, **global dependencies** |
 | `truesim.java-library-conventions` | libraries | Above + `java-library`, javadoc jar, publishing |
 | `truesim.application-conventions` | apps | Above + `application` |
 | `truesim.publishing-conventions` | anything published | `maven-publish` to the project's GitHub Packages registry |
-
-The `catalog` module publishes a shared version catalog (`com.truesim.build:catalog`).
 
 ### Settings
 
 | Gradle property | Default | Purpose |
 |---|---|---|
-| `truesim.java.version` | `25` | Java toolchain version |
+| `truesim.java.version` | `27` | Java toolchain version |
+| `truesim.global-dependencies` | `true` | Set to `false` to skip global dependencies for a project |
 | `truesim.github.repo` | root project name | GitHub repo used for the publishing URL |
+
+## Global dependencies
+
+Every project that applies `truesim.java-conventions` (directly or through the library/application
+plugins) gets the `global-<configuration>` bundles from **every** version catalog in the build
+added to the matching configuration:
+
+| Bundle | Configuration |
+|---|---|
+| `global-api` | `api` (libraries only) |
+| `global-implementation` | `implementation` |
+| `global-compile-only` | `compileOnly` |
+| `global-annotation-processor` | `annotationProcessor` |
+| `global-runtime-only` | `runtimeOnly` |
+| `global-test-implementation` | `testImplementation` |
+| `global-test-compile-only` | `testCompileOnly` |
+| `global-test-annotation-processor` | `testAnnotationProcessor` |
+| `global-test-runtime-only` | `testRuntimeOnly` |
+
+The shared catalog ([catalog/libs.versions.toml](catalog/libs.versions.toml)) defines the
+organization-wide defaults:
+
+- **Lombok** for `compileOnly`, `annotationProcessor`, `testCompileOnly` and `testAnnotationProcessor`
+- **SLF4J API** for `implementation`
+- **Logback** for `runtimeOnly`
+- **AssertJ** for `testImplementation`
+
+To change them for everyone, edit that file and release a new version. To add more for a
+single repository, define the same bundle names in that repository's own
+`gradle/libs.versions.toml`. Its bundles are added on top of the shared ones:
+
+```toml
+[libraries]
+commons-lang3 = "org.apache.commons:commons-lang3:3.17.0"
+
+[bundles]
+global-implementation = ["commons-lang3"]
+```
 
 ## Using it
 
@@ -58,26 +95,9 @@ pluginManagement {
 plugins {
     id("truesim.settings") version "0.1.0"
 }
-
-dependencyResolutionManagement {
-    repositories {
-        maven {
-            url = uri("https://maven.pkg.github.com/true-sim/build-logic")
-            credentials {
-                username = providers.gradleProperty("gpr.user").get()
-                password = providers.gradleProperty("gpr.key").get()
-            }
-        }
-    }
-    versionCatalogs {
-        create("truesim") {
-            from("com.truesim.build:catalog:0.1.0")
-        }
-    }
-}
 ```
 
-Then in a module:
+Either way, `truesim.settings` registers the shared catalog as `truesim`. Then in a module:
 
 ```kotlin
 plugins {
@@ -85,11 +105,13 @@ plugins {
 }
 
 dependencies {
-    testImplementation(platform(truesim.junit.bom))
-    testImplementation(truesim.bundles.testing)
-    testRuntimeOnly(truesim.junit.platform.launcher)
+    // Lombok, SLF4J, Logback, AssertJ and JUnit are already there.
+    implementation(truesim.some.other.lib)
 }
 ```
+
+The catalog is also published on its own as `com.truesim.build:catalog`, for builds that don't
+use the settings plugin.
 
 ## Releasing
 
