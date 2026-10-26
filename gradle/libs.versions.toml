@@ -1,0 +1,6 @@
+# Versions used by build-logic itself.
+[versions]
+foojay-resolver = "1.0.0"
+
+[libraries]
+foojay-resolver = { module = "org.gradle.toolchains:foojay-resolver", version.ref = "foojay-resolver" }
