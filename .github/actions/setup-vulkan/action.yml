@@ -1,9 +1,9 @@
 name: Set up Vulkan
 description: >
-  Vulkan for headless Linux runners: the loader, Mesa's lavapipe (a CPU Vulkan device) and the Khronos validation
-  layer, from cached packages so the versions stay fixed between runs. Checks that a Vulkan 1.3 device and the
-  validation layer are there, writes their versions to the job summary, and sets SDL_VIDEO_DRIVER=offscreen and
-  TRUESIM_REQUIRE_VALIDATION=true for later steps.
+  Vulkan for headless Linux runners: Mesa's lavapipe (a CPU Vulkan device), the Khronos validation layer and, if the
+  image lacks it, the loader, unpacked from cached packages so the versions stay fixed between runs. Checks that a
+  Vulkan 1.3 device and the validation layer are there, writes their versions to the job summary, and sets
+  SDL_VIDEO_DRIVER=offscreen and TRUESIM_REQUIRE_VALIDATION=true for later steps.
 
 inputs:
   cache-version:
@@ -47,20 +47,34 @@ runs:
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        sudo apt-get update -qq
+        sudo apt-get update
         sudo apt-get clean
-        sudo apt-get install -y -qq --download-only --no-install-recommends \
+        sudo apt-get install -y --download-only --no-install-recommends \
           libvulkan1 mesa-vulkan-drivers vulkan-validationlayers vulkan-tools
         mkdir -p ~/.cache/truesim-vulkan-debs
-        cp /var/cache/apt/archives/*.deb ~/.cache/truesim-vulkan-debs/ 2>/dev/null || true
+        cp /var/cache/apt/archives/*.deb ~/.cache/truesim-vulkan-debs/
         ls ~/.cache/truesim-vulkan-debs
 
     - name: Install Vulkan packages
       shell: bash
       run: |
-        if ls ~/.cache/truesim-vulkan-debs/*.deb > /dev/null 2>&1; then
-          sudo apt-get install -y -qq --no-install-recommends ~/.cache/truesim-vulkan-debs/*.deb
-        fi
+        # Unpacked into a directory instead of installed: no apt or dpkg lock to wait for (the image's own apt
+        # jobs can hold it for minutes), no root, and exactly the cached versions. The loader is pointed at them.
+        root="$HOME/.cache/truesim-vulkan-root"
+        rm -rf "$root"
+        mkdir -p "$root"
+        for deb in ~/.cache/truesim-vulkan-debs/*.deb; do
+          dpkg-deb -x "$deb" "$root"
+        done
+        lib="$root/usr/lib/$(uname -m)-linux-gnu"
+        icd=$(ls "$root"/usr/share/vulkan/icd.d/lvp_icd*.json)
+        sed -i "s#\"/usr/lib/#\"$root/usr/lib/#" "$icd"
+        {
+          echo "VK_DRIVER_FILES=$icd"
+          echo "VK_ADD_LAYER_PATH=$root/usr/share/vulkan/explicit_layer.d"
+          echo "LD_LIBRARY_PATH=$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        } >> "$GITHUB_ENV"
+        echo "$root/usr/bin" >> "$GITHUB_PATH"
 
     - name: Check Vulkan
       id: check
