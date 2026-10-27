@@ -211,6 +211,33 @@ dependencies {
 The catalog is also published on its own as `com.truesim.build:catalog`, for builds that don't
 use the settings plugin.
 
+## Vulkan on CI
+
+Repositories whose tests need Vulkan (the engine) use the composite action
+`.github/actions/setup-vulkan` on a pinned runner image. It installs the loader, Mesa's lavapipe (a CPU Vulkan
+device) and the Khronos validation layer from cached packages. While the cache key stays the same, every run uses
+the same versions, and the install takes seconds instead of a minute and a half. It also:
+
+- fails when there is no Vulkan 1.3 device or no validation layer;
+- writes the versions to the job summary;
+- sets `SDL_VIDEO_DRIVER=offscreen` for headless windows;
+- sets `TRUESIM_REQUIRE_VALIDATION=true`, so tests fail instead of silently running unvalidated.
+
+```yaml
+jobs:
+  build:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: true-sim/build-logic/.github/actions/setup-vulkan@<commit>
+      - uses: actions/setup-java@v6
+      ...
+```
+
+Reference the action by commit, so a change here cannot break other repositories' builds unannounced. To move to
+newer Mesa or validation layers, bump the `cache-version` input (default `"1"`). The cache also refreshes by itself
+when unused for 7 days.
+
 ## Releasing
 
 Push a tag `vX.Y.Z`; the Publish workflow publishes version `X.Y.Z` to GitHub Packages.

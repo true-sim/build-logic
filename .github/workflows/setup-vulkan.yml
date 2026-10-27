@@ -1,0 +1,26 @@
+name: Setup Vulkan action
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/actions/setup-vulkan/**, .github/workflows/setup-vulkan.yml]
+  pull_request:
+    paths: [.github/actions/setup-vulkan/**, .github/workflows/setup-vulkan.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  setup-vulkan:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - id: vulkan
+        uses: ./.github/actions/setup-vulkan
+      - name: Check the outputs and environment
+        run: |
+          test -n "${{ steps.vulkan.outputs.api-version }}"
+          test -n "${{ steps.vulkan.outputs.validation-layer }}"
+          test "$SDL_VIDEO_DRIVER" = offscreen
+          test "$TRUESIM_REQUIRE_VALIDATION" = true
+          echo "Vulkan ${{ steps.vulkan.outputs.api-version }}, ${{ steps.vulkan.outputs.driver }}, layer ${{ steps.vulkan.outputs.validation-layer }}"
