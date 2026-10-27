@@ -17,7 +17,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 27
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew publish -Pversion=${GITHUB_REF_NAME#v}
         env:
           GITHUB_ACTOR: ${{ github.actor }}
