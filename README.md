@@ -125,7 +125,8 @@ if the object never escapes, because escape analysis removes it. This is enforce
    Exempt: static initializers, `toString()`, code that unconditionally ends in `throw` (e.g.
    building an exception message) and anything annotated `@AllowAllocation`.
 2. **In tests**, `AllocationAssertions.assertAllocationFree` runs code until the JIT has compiled
-   it and then measures real heap allocations of the current thread:
+   it and then measures real heap allocations of the current thread: (test JVMs compile synchronously,
+   `-XX:-BackgroundCompilation`, so the measurement reflects the optimizing compiler, not a timing race)
 
 ```java
 import static com.truesim.testing.AllocationAssertions.assertAllocationFree;

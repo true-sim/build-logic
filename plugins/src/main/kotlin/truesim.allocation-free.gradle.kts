@@ -44,3 +44,10 @@ val checkAllocations = tasks.register<AllocationCheck>("checkAllocations") {
 tasks.named("check") {
     dependsOn(checkAllocations)
 }
+
+// Compile synchronously in tests: AllocationAssertions then measures what the optimizing compiler produces, instead of
+// racing it. With background compilation a method can get its optimized version before its profile is mature and keep
+// allocations the JIT would otherwise remove.
+tasks.withType<Test>().configureEach {
+    jvmArgs("-XX:-BackgroundCompilation")
+}
