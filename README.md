@@ -214,9 +214,10 @@ use the settings plugin.
 ## Vulkan on CI
 
 Repositories whose tests need Vulkan (the engine) use the composite action
-`.github/actions/setup-vulkan` on a pinned runner image. It installs the loader, Mesa's lavapipe (a CPU Vulkan
-device) and the Khronos validation layer from cached packages. While the cache key stays the same, every run uses
-the same versions, and the install takes seconds instead of a minute and a half. It also:
+`.github/actions/setup-vulkan` on a pinned runner image. It unpacks Mesa's lavapipe (a CPU Vulkan device) and the
+Khronos validation layer from cached packages into a directory and points the Vulkan loader at them, with no apt,
+dpkg lock or root involved. While the cache key stays the same, every run uses the same versions, and setup takes
+seconds. It also:
 
 - fails when there is no Vulkan 1.3 device or no validation layer;
 - writes the versions to the job summary;
