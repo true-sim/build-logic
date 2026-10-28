@@ -11,6 +11,7 @@ Shared Gradle convention plugins and version catalog for true-sim projects.
 | `truesim.java-library-conventions` | libraries | Above + `java-library`, javadoc jar, publishing |
 | `truesim.application-conventions` | apps | Above + `application` |
 | `truesim.allocation-free` | strict modules | **Allocation-free check** at build time, plus `AllocationAssertions` for tests |
+| `truesim.slang` | projects with shaders | **Slang shaders** compiled to SPIR-V resources with a pinned, verified `slangc` |
 | `truesim.publishing-conventions` | anything published | `maven-publish` to the project's GitHub Packages registry |
 
 The `annotations` (`com.truesim.build:annotations`) and `testing` (`com.truesim.build:testing`) libraries
@@ -210,6 +211,27 @@ dependencies {
 
 The catalog is also published on its own as `com.truesim.build:catalog`, for builds that don't
 use the settings plugin.
+
+## Slang shaders
+
+`truesim.slang` compiles [Slang](https://shader-slang.org/) shaders to SPIR-V with a pinned compiler:
+
+```kotlin
+plugins {
+    id("truesim.java-library-conventions")
+    id("truesim.slang")
+}
+```
+
+- Every `src/main/slang/**/*.slang` file that declares entry points (`[shader("...")]`) becomes one SPIR-V module
+  with all of them, named as in the source, at classpath `shaders/<same path>.spv`; other `.slang` files are modules
+  the shaders import. `src/test/slang` goes to the test resources the same way and can import the main modules.
+- Target SPIR-V 1.6 (Vulkan 1.3), column-major matrices, `-O2`, warnings as errors. Extra arguments:
+  `slang { arguments.add("-DQUALITY=2") }`.
+- The compiler is Slang's own release for the build machine's platform (Windows, Linux, macOS; x86_64 and
+  aarch64), downloaded once into the Gradle user home and checked against a SHA-256 pinned here: builds and CI use
+  exactly the pinned compiler, and a tampered download fails the build. The task is cacheable.
+- Pinned: Slang 2026.20. Another version needs its checksum: `slang { version = "..."; checksum = "..." }`.
 
 ## Vulkan on CI
 
