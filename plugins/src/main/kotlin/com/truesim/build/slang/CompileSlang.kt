@@ -24,6 +24,10 @@ import javax.inject.Inject
  * points (`[shader("...")]`) becomes one SPIR-V module with all of them, named by entry point, at the same relative
  * path under [output] with `.spv`. Other `.slang` files are modules the shaders import; [sources] is on the include
  * path. Warnings fail the build.
+ *
+ * A directory of modules (the sources or an include) may hold a `slangc.arguments` file: arguments its modules need
+ * from whoever compiles them, whitespace-separated, e.g. `-warnings-disable 39001` for a deliberate binding overlap.
+ * They are added for every shader, so importing a library's modules needs nothing more than the import.
  */
 @CacheableTask
 abstract class CompileSlang @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
@@ -60,6 +64,10 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
         val root = sources.get().asFile
         val out = output.get().asFile
         out.deleteRecursively()
+        val required = (listOf(root) + includes.files.filter { it.isDirectory })
+            .map { File(it, ARGUMENTS) }
+            .filter { it.isFile }
+            .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
         val shaders = root.walkTopDown()
             .filter { it.isFile && it.extension == "slang" && it.readText().contains("[shader(") }
             .sortedBy { it.relativeTo(root).invariantSeparatorsPath }
@@ -79,7 +87,7 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
                         "-O2", "-I", root.absolutePath,
                         "-o", target.absolutePath,
                     ) + includes.files.filter { it.isDirectory }.flatMap { listOf("-I", it.absolutePath) } +
-                        arguments.get(),
+                        required + arguments.get(),
                 )
                 standardOutput = log
                 errorOutput = log
@@ -87,5 +95,10 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
             }
             check(result.exitValue == 0) { "Slang could not compile $relative.slang:\n$log" }
         }
+    }
+
+    companion object {
+        /** The file of arguments a directory's modules need, beside them. */
+        const val ARGUMENTS = "slangc.arguments"
     }
 }
