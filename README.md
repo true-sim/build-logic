@@ -232,6 +232,32 @@ plugins {
   aarch64), downloaded once into the Gradle user home and checked against a SHA-256 pinned here: builds and CI use
   exactly the pinned compiler, and a tampered download fails the build. The task is cacheable.
 - Pinned: Slang 2026.20. Another version needs its checksum: `slang { version = "..."; checksum = "..." }`.
+- **Libraries:** `src/main/slang` ships in the jar under `slang/`, and a project's shaders import the modules of every
+  dependency built with the plugin (`import meshlets.common;` from engine-render). A library's `slangc.arguments`
+  (whitespace-separated compiler arguments its modules need) apply to every shader importing it.
+
+### Material records
+
+Engine-render's `materials` module marks material structs for the build, which generates their Java before the Java
+compiles: the Slang struct is the one source of truth, and slangc's layout the layout.
+
+```kotlin
+slang {
+    javaPackage = "com.example.game.materials" // where the generated Java goes
+}
+```
+
+- A `[MaterialParameters(features)]` or `[MaterialFeature(feature)]` struct becomes a Java record of the same name:
+  its fields (`[Color]` as `Color`, vectors as `Vec2` to `Vec4`, nested records as theirs), the struct's initializers
+  as `DEFAULTS`, `[Range]` checks, withers, the byte layout from slangc's reflection of the struct, a writer, a
+  constant per field for writing one value in place, and `fromValues` for data by field name.
+- A `[MaterialType("name")]` struct (an `IMaterial` with `typealias Parameters = ...`) gets its visibility-buffer entry
+  points generated (plain, and with inline ray shadows), compiled with the shaders, and a Java class of the same name
+  holding its `MaterialType`.
+- Structs of other projects are found through `slang-records.index`, shipped in the jar beside the modules, so a
+  game's record can nest the engine's. A nested struct whose layout no longer matches its index fails the build.
+- Record structs must be `public` in their Slang module. With `truesim.allocation-free` the records are marked
+  `@AllowAllocation`.
 
 ## Vulkan on CI
 
