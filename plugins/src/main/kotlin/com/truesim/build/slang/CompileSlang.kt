@@ -36,6 +36,11 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sources: DirectoryProperty
 
+    /** Directories of generated shaders, compiled as the sources' (at their paths relative to the directory). */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val generated: ConfigurableFileCollection
+
     /** More directories of modules the shaders import, e.g. the main shaders' for test shaders. */
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -64,16 +69,19 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
         val root = sources.get().asFile
         val out = output.get().asFile
         out.deleteRecursively()
+        out.mkdirs()
         val required = (listOf(root) + includes.files.filter { it.isDirectory })
             .map { File(it, ARGUMENTS) }
             .filter { it.isFile }
             .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
-        val shaders = root.walkTopDown()
-            .filter { it.isFile && it.extension == "slang" && it.readText().contains("[shader(") }
-            .sortedBy { it.relativeTo(root).invariantSeparatorsPath }
-            .toList()
-        for (shader in shaders) {
-            val relative = shader.relativeTo(root).invariantSeparatorsPath.removeSuffix(".slang")
+        val shaders = (listOf(root) + generated.files.filter { it.isDirectory }).filter { it.isDirectory }
+            .flatMap { dir ->
+                dir.walkTopDown().filter { it.isFile && it.extension == "slang" && it.readText().contains("[shader(") }
+                    .map { dir to it }
+            }
+            .sortedBy { (dir, file) -> file.relativeTo(dir).invariantSeparatorsPath }
+        for ((dir, shader) in shaders) {
+            val relative = shader.relativeTo(dir).invariantSeparatorsPath.removeSuffix(".slang")
             val target = File(out, "$relative.spv")
             target.parentFile.mkdirs()
             val log = ByteArrayOutputStream()

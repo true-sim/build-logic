@@ -15,7 +15,8 @@ import java.util.zip.ZipFile
  * their jars by `truesim.slang`) into [output], for this project's shaders to import: a game's shader can
  * `import meshlets.common;` from engine-render, say. Directories on the classpath (projects of the same build) are
  * read as their `slang/` subdirectory, jars by their `slang/` entries. Later entries do not overwrite earlier ones,
- * but the libraries' `slangc.arguments` (what their modules need from the compiler) add up.
+ * but the libraries' `slangc.arguments` (what their modules need from the compiler) and `slang-records.index` (their
+ * material records' Java classes) add up.
  */
 @CacheableTask
 abstract class CollectSlangLibraries : DefaultTask() {
@@ -38,7 +39,7 @@ abstract class CollectSlangLibraries : DefaultTask() {
                     if (root.isDirectory) {
                         root.walkTopDown().filter { it.isFile }.forEach { file ->
                             val target = File(out, file.relativeTo(root).invariantSeparatorsPath)
-                            if (target.name == CompileSlang.ARGUMENTS && target.parentFile == out) {
+                            if (target.name in MERGED && target.parentFile == out) {
                                 target.appendText(file.readText() + "\n")
                             } else if (!target.exists()) {
                                 target.parentFile.mkdirs()
@@ -56,7 +57,7 @@ abstract class CollectSlangLibraries : DefaultTask() {
                         if (!target.canonicalPath.startsWith(out.canonicalPath + File.separator)) {
                             continue // a path leaving the output: not a module
                         }
-                        if (target.name == CompileSlang.ARGUMENTS && target.parentFile == out) {
+                        if (target.name in MERGED && target.parentFile == out) {
                             target.appendText(zip.getInputStream(zipEntry).use { String(it.readBytes()) } + "\n")
                         } else if (!target.exists()) {
                             target.parentFile.mkdirs()
@@ -66,5 +67,10 @@ abstract class CollectSlangLibraries : DefaultTask() {
                 }
             }
         }
+    }
+
+    private companion object {
+        /** Files of every library adding up, not the first one's. */
+        val MERGED = setOf(CompileSlang.ARGUMENTS, GenerateSlangRecords.INDEX)
     }
 }

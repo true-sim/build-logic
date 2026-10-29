@@ -4,8 +4,13 @@
 //
 // The Slang sources ship in the jar too, under slang/, and the shaders of a project may import the modules of every
 // dependency on its runtime classpath that uses this plugin: a game's shader can `import meshlets.common;`.
+//
+// Material records (engine-render's `materials` module: `[MaterialParameters]`, `[MaterialFeature]` and
+// `[MaterialType]` structs) become Java in slang.javaPackage, generated before the Java compiles: the Slang struct is
+// their one source of truth.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
+import com.truesim.build.slang.GenerateSlangRecords
 import com.truesim.build.slang.SlangToolchain
 
 plugins {
@@ -21,6 +26,9 @@ interface SlangExtension {
 
     /** Extra slangc arguments. */
     val arguments: ListProperty<String>
+
+    /** The package of the Java generated from material records; needed once there are any. */
+    val javaPackage: Property<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -41,13 +49,41 @@ fun registerLibraries(name: String, classpath: String) = tasks.register<CollectS
 val mainLibraries = registerLibraries("slangLibraries", "runtimeClasspath")
 val testLibraries = registerLibraries("testSlangLibraries", "testRuntimeClasspath")
 
-fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>) =
+fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>) =
+    tasks.register<GenerateSlangRecords>(name) {
+    description = "Generates Java and entry points from the $sourceSet Slang material records."
+    sources = layout.projectDirectory.dir("src/$sourceSet/slang")
+    includes.from(layout.projectDirectory.dir("src/main/slang"))
+    includes.from(libraries.flatMap { it.output })
+    version = slang.version
+    checksum = slang.checksum
+    arguments = slang.arguments
+    javaPackage = slang.javaPackage
+    allowAllocation = false
+    javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
+    slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")
+    indexOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/index")
+    cacheDir = layout.dir(provider { gradle.gradleUserHomeDir.resolve("truesim") })
+}
+
+val mainRecords = registerRecords("generateSlangRecords", "main", mainLibraries)
+pluginManager.withPlugin("truesim.allocation-free") {
+    tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
+}
+val testRecords = registerRecords("generateTestSlangRecords", "test", testLibraries)
+testRecords.configure {
+    includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
+}
+
+fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>,
+    records: TaskProvider<GenerateSlangRecords>) =
     tasks.register<CompileSlang>(name) {
     group = LifecycleBasePlugin.BUILD_GROUP
     description = "Compiles the $sourceSet Slang shaders to SPIR-V."
     sources = layout.projectDirectory.dir("src/$sourceSet/slang")
     includes.from(layout.projectDirectory.dir("src/main/slang"))
     includes.from(libraries.flatMap { it.output })
+    generated.from(records.flatMap { it.slangOutput })
     version = slang.version
     checksum = slang.checksum
     arguments = slang.arguments
@@ -56,19 +92,24 @@ fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<Colle
     onlyIf("there are Slang sources") { sources.get().asFile.isDirectory }
 }
 
-val compileSlang = registerSlang("compileSlang", "main", mainLibraries)
-val compileTestSlang = registerSlang("compileTestSlang", "test", testLibraries)
+val compileSlang = registerSlang("compileSlang", "main", mainLibraries, mainRecords)
+val compileTestSlang = registerSlang("compileTestSlang", "test", testLibraries, testRecords)
 
 // The sources go into the jar as well, under slang/, for projects depending on this one to import.
 tasks.named<ProcessResources>("processResources") {
     from(layout.projectDirectory.dir("src/main/slang")) {
         into("slang")
     }
+    from(mainRecords.flatMap { it.indexOutput }) {
+        into("slang")
+    }
 }
 
 sourceSets.main {
     resources.srcDir(compileSlang.map { it.output.get().asFile.parentFile })
+    java.srcDir(mainRecords.flatMap { it.javaOutput })
 }
 sourceSets.test {
     resources.srcDir(compileTestSlang.map { it.output.get().asFile.parentFile })
+    java.srcDir(testRecords.flatMap { it.javaOutput })
 }
