@@ -259,6 +259,20 @@ slang {
 - Record structs must be `public` in their Slang module. With `truesim.allocation-free` the records are marked
   `@AllowAllocation`.
 
+### Push-constant layouts
+
+Every struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in `slang.pushPackage`
+(or `slang.javaPackage`): `BYTES`, the size slangc gives the block, and a constant per field with its byte offset
+(`meshTable` as `MESH_TABLE`, a nested struct's fields by path, `occlusion.pyramid` as `OCCLUSION_PYRAMID`). Host code
+writes `memPutLong(push + DrawPush.MESH_TABLE, ...)` instead of hand-counted offsets, so a field added or moved in
+the shader moves the Java with it. Two blocks' structs of one name in one project fail the build: each becomes a class.
+
+```kotlin
+slang {
+    pushPackage = "com.example.game.push"
+}
+```
+
 ## Vulkan on CI
 
 Repositories whose tests need Vulkan (the engine) use the composite action
