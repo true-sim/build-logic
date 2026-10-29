@@ -8,6 +8,10 @@
 // Material records (engine-render's `materials` module: `[MaterialParameters]`, `[MaterialFeature]` and
 // `[MaterialType]` structs) become Java in slang.javaPackage, generated before the Java compiles: the Slang struct is
 // their one source of truth.
+//
+// Push-constant blocks become Java too: a class per struct of a `[[vk::push_constant]] ConstantBuffer<S>`, named S, in
+// slang.pushPackage (or slang.javaPackage), holding the bytes the block takes and each field's offset as slangc lays it
+// out, so host code writes push constants by name instead of by hand-counted offsets.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -29,6 +33,12 @@ interface SlangExtension {
 
     /** The package of the Java generated from material records; needed once there are any. */
     val javaPackage: Property<String>
+
+    /**
+     * The package of the push-constant layouts: a Java class per struct of a `[[vk::push_constant]]` block, with its size
+     * and field offsets. [javaPackage] if unset; without either, none are generated.
+     */
+    val pushPackage: Property<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -59,6 +69,7 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     checksum = slang.checksum
     arguments = slang.arguments
     javaPackage = slang.javaPackage
+    pushPackage = slang.pushPackage
     allowAllocation = false
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
     slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")

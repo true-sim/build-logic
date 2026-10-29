@@ -34,6 +34,10 @@ import javax.inject.Inject
  *   entry points, plain and with inline ray shadows, as Slang sources under [slangOutput], and a Java class of the same
  *   name holding its `MaterialType`.
  *
+ * - a struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in [pushPackage] (or
+ *   [javaPackage]): the bytes the block takes and each field's byte offset (nested structs' fields by path), from
+ *   slangc's reflection of the block.
+ *
  * Structs of libraries (other projects' modules, on [includes]) are referred to through their `slang-records.index`,
  * which this task writes for its own under [indexOutput] and which ships in the jar beside the modules; a layout that
  * no longer matches its index fails the build.
@@ -64,6 +68,11 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Optional
     abstract val javaPackage: Property<String>
 
+    /** The package of the push-constant layouts; [javaPackage] if unset, and none are generated without either. */
+    @get:Input
+    @get:Optional
+    abstract val pushPackage: Property<String>
+
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -87,7 +96,8 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         val indexOut = indexOutput.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
         val index = File(indexOut, INDEX)
         val root = sources.get().asFile
-        val declared = if (root.isDirectory) scan(root) else Declared(emptyList(), emptyList())
+        val declared = if (root.isDirectory) scan(root) else Declared(emptyList(), emptyList(), emptyList())
+        (pushPackage.orNull ?: javaPackage.orNull)?.let { pkg -> writePushLayouts(root, declared.pushes, pkg, javaOut) }
         if (declared.records.isEmpty() && declared.types.isEmpty()) {
             index.writeText("")
             return
@@ -136,11 +146,14 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
 
     class MaterialTypeDecl(val name: String, val struct: String, val module: String, val parameters: String)
 
-    class Declared(val records: List<Record>, val types: List<MaterialTypeDecl>)
+    class PushBlock(val struct: String, val module: String)
+
+    class Declared(val records: List<Record>, val types: List<MaterialTypeDecl>, val pushes: List<PushBlock>)
 
     private fun scan(root: File): Declared {
         val records = mutableListOf<Record>()
         val types = mutableListOf<MaterialTypeDecl>()
+        val pushes = mutableListOf<PushBlock>()
         for (file in root.walkTopDown().filter { it.isFile && it.extension == "slang" }.sortedBy { it.path }) {
             val text = withoutComments(file.readText())
             val module = file.relativeTo(root).invariantSeparatorsPath.removeSuffix(".slang").replace('/', '.')
@@ -155,12 +168,21 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                     ?: throw IllegalStateException("${match.groupValues[2]} needs `typealias Parameters = ...;`")
                 types += MaterialTypeDecl(match.groupValues[1], match.groupValues[2], module, parameters)
             }
+            for (match in PUSH.findAll(text)) {
+                pushes += PushBlock(match.groupValues[1], module)
+            }
+        }
+        for ((struct, blocks) in pushes.groupBy { it.struct }) {
+            val modules = blocks.map { it.module }.distinct()
+            check(modules.size == 1) {
+                "Push-constant structs called $struct in $modules: rename all but one, as each becomes a Java class"
+            }
         }
         val names = records.map { it.name } + types.map { it.struct }
         names.groupBy { it }.filter { it.value.size > 1 }.keys.firstOrNull()?.let {
             throw IllegalStateException("Two material records or types are called $it")
         }
-        return Declared(records, types)
+        return Declared(records, types, pushes.distinctBy { it.struct })
     }
 
     /** The struct body after the `{` that ends at `from`, to its `}`: material records are flat. */
@@ -227,24 +249,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 structs.indices.forEach { append(" + uint(probe.p$it != nullptr)") }
                 append(";\n}\n")
             })
-            val json = File(temp, "probe.json")
-            val includeDirs = listOf(root) + includes.files.filter { it.isDirectory }
-            val required = includeDirs.map { File(it, CompileSlang.ARGUMENTS) }.filter { it.isFile }
-                .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
-            val log = ByteArrayOutputStream()
-            val result = exec.exec {
-                commandLine(
-                    listOf(slangc.absolutePath, probe.absolutePath, "-target", "spirv", "-profile", "spirv_1_6",
-                        "-o", File(temp, "probe.spv").absolutePath, "-reflection-json", json.absolutePath) +
-                        includeDirs.flatMap { listOf("-I", it.absolutePath) } + required + arguments.get(),
-                )
-                standardOutput = log
-                errorOutput = log
-                isIgnoreExitValue = true
-            }
-            check(result.exitValue == 0) { "Slang could not compile the material records:\n$log" }
-            @Suppress("UNCHECKED_CAST")
-            val reflection = JsonSlurper().parse(json) as Map<String, Any?>
+            val reflection = compileProbe(slangc, root, probe, "the material records")
             val found = mutableMapOf<String, Struct>()
             @Suppress("UNCHECKED_CAST")
             for (parameter in reflection["parameters"] as List<Map<String, Any?>>) {
@@ -262,6 +267,112 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             temp.deleteRecursively()
         }
     }
+
+    /** Compiles {@code probe} (with the sources and libraries on the include path) and returns slangc's reflection. */
+    private fun compileProbe(slangc: File, root: File, probe: File, what: String): Map<String, Any?> {
+        val dir = probe.parentFile
+        val json = File(dir, probe.nameWithoutExtension + ".json")
+        val includeDirs = listOf(root) + includes.files.filter { it.isDirectory }
+        val required = includeDirs.map { File(it, CompileSlang.ARGUMENTS) }.filter { it.isFile }
+            .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
+        val log = ByteArrayOutputStream()
+        val result = exec.exec {
+            commandLine(
+                listOf(slangc.absolutePath, probe.absolutePath, "-target", "spirv", "-profile", "spirv_1_6",
+                    "-o", File(dir, probe.nameWithoutExtension + ".spv").absolutePath,
+                    "-reflection-json", json.absolutePath) +
+                    includeDirs.flatMap { listOf("-I", it.absolutePath) } + required + arguments.get(),
+            )
+            standardOutput = log
+            errorOutput = log
+            isIgnoreExitValue = true
+        }
+        check(result.exitValue == 0) { "Slang could not compile $what:\n$log" }
+        @Suppress("UNCHECKED_CAST")
+        return JsonSlurper().parse(json) as Map<String, Any?>
+    }
+
+    // ------------------------------------------------------------------------------------------------ push constants
+
+    class Offset(val name: String, val offset: Int)
+
+    /**
+     * Writes a Java class per push-constant struct of the sources: the bytes its block takes and each field's byte offset
+     * (nested structs' fields by path), as slangc lays the block out, so the host writes each value where the shader
+     * reads it.
+     */
+    private fun writePushLayouts(root: File, pushes: List<PushBlock>, pkg: String, javaOut: File) {
+        if (pushes.isEmpty()) {
+            return
+        }
+        val slangc = SlangToolchain.install(cacheDir.get().asFile, version.get(), checksum.get())
+        val temp = Files.createTempDirectory("slang-push").toFile()
+        try {
+            val probe = File(temp, "push.slang")
+            probe.writeText(buildString {
+                pushes.map { it.module }.distinct().forEach { append("import $it;\n") }
+                append("struct PushProbe\n{\n")
+                pushes.forEachIndexed { i, p -> append("    ${p.struct} s$i;\n") }
+                append("};\n[[vk::push_constant]] ConstantBuffer<PushProbe> pushProbe;\n")
+                append("RWStructuredBuffer<uint> probeOut;\n")
+                append("[shader(\"compute\")]\n[numthreads(1, 1, 1)]\nvoid probeMain()\n{\n")
+                append("    probeOut[0] = 0;\n}\n")
+            })
+            val reflection = compileProbe(slangc, root, probe, "the push-constant structs")
+            @Suppress("UNCHECKED_CAST")
+            val parameter = (reflection["parameters"] as List<Map<String, Any?>>).first { it["name"] == "pushProbe" }
+            @Suppress("UNCHECKED_CAST")
+            val element = (parameter["type"] as Map<String, Any?>)["elementType"] as Map<String, Any?>
+            @Suppress("UNCHECKED_CAST")
+            val fields = element["fields"] as List<Map<String, Any?>>
+            pushes.forEachIndexed { i, push ->
+                val field = fields[i]
+                @Suppress("UNCHECKED_CAST")
+                val bytes = ((field["binding"] as Map<String, Any?>)["size"] as Number).toInt()
+                val offsets = mutableListOf<Offset>()
+                @Suppress("UNCHECKED_CAST")
+                offsets("", field["type"] as Map<String, Any?>, offsets)
+                File(javaOut, pkg.replace('.', '/') + "/${push.struct}.java").apply { parentFile.mkdirs() }
+                    .writeText(pushSource(pkg, push, bytes, offsets))
+            }
+        } finally {
+            temp.deleteRecursively()
+        }
+    }
+
+    /** The byte offsets of {@code type}'s fields, relative to its start; a nested struct's own fields by path. */
+    @Suppress("UNCHECKED_CAST")
+    private fun offsets(prefix: String, type: Map<String, Any?>, into: MutableList<Offset>, base: Int = 0) {
+        for (field in type["fields"] as List<Map<String, Any?>>) {
+            val name = prefix + field["name"] as String
+            val offset = base + ((field["binding"] as Map<String, Any?>)["offset"] as Number).toInt()
+            into += Offset(name, offset)
+            val t = field["type"] as Map<String, Any?>
+            if (t["kind"] == "struct") {
+                offsets("$name.", t, into, offset)
+            }
+        }
+    }
+
+    private fun pushSource(pkg: String, push: PushBlock, bytes: Int, offsets: List<Offset>): String = buildString {
+        append("package $pkg;\n\n")
+        append("/**\n")
+        append(" * Generated from ${push.module}'s push-constant struct {@code ${push.struct}}: the bytes its block takes and\n")
+        append(" * each field's byte offset, as slangc lays it out, so the host writes each value where the shader reads it.\n")
+        append(" */\n")
+        append("public final class ${push.struct} {\n\n")
+        append("    /** Bytes the block takes. */\n")
+        append("    public static final int BYTES = $bytes;\n")
+        for (offset in offsets) {
+            append("    /** {@code ${offset.name}}. */\n")
+            append("    public static final int ${constant(offset.name)} = ${offset.offset};\n")
+        }
+        append("\n    private ${push.struct}() {\n    }\n}\n")
+    }
+
+    /** {@code meshTable} as {@code MESH_TABLE}, {@code occlusion.pyramid} as {@code OCCLUSION_PYRAMID}. */
+    private fun constant(name: String): String =
+        name.replace('.', '_').replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").uppercase()
 
     private fun collect(struct: Struct, into: MutableMap<String, Struct>) {
         into[struct.name] = struct
@@ -367,6 +478,8 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 "struct\\s+(\\w+)[^{;]*\\{")
         private val TYPE = Regex(
             "\\[MaterialType\\(\"(\\w+)\"\\)]\\s*(?:\\[[^\\]]*]\\s*)*(?:public\\s+)?struct\\s+(\\w+)[^{;]*\\{")
+        private val PUSH =
+            Regex("\\[\\[vk::push_constant]]\\s*(?:(?:public|internal|uniform)\\s+)*ConstantBuffer<(\\w+)>")
         private val PARAMETERS = Regex("typealias\\s+Parameters\\s*=\\s*(\\w+)\\s*;")
         private val FIELD = Regex("(\\w+)\\s+(\\w+)\\s*(=\\s*(.+))?", RegexOption.DOT_MATCHES_ALL)
     }
