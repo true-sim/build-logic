@@ -24,6 +24,10 @@ import javax.inject.Inject
  * points (`[shader("...")]`) becomes one SPIR-V module with all of them, named by entry point, at the same relative
  * path under [output] with `.spv`. Other `.slang` files are modules the shaders import; [sources] is on the include
  * path. Warnings fail the build.
+ *
+ * A directory of modules (the sources or an include) may hold a `slangc.arguments` file: arguments its modules need
+ * from whoever compiles them, whitespace-separated, e.g. `-warnings-disable 39001` for a deliberate binding overlap.
+ * They are added for every shader, so importing a library's modules needs nothing more than the import.
  */
 @CacheableTask
 abstract class CompileSlang @Inject constructor(private val exec: ExecOperations) : DefaultTask() {
@@ -31,6 +35,11 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
     @get:InputDirectory
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sources: DirectoryProperty
+
+    /** Directories of generated shaders, compiled as the sources' (at their paths relative to the directory). */
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val generated: ConfigurableFileCollection
 
     /** More directories of modules the shaders import, e.g. the main shaders' for test shaders. */
     @get:InputFiles
@@ -60,12 +69,19 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
         val root = sources.get().asFile
         val out = output.get().asFile
         out.deleteRecursively()
-        val shaders = root.walkTopDown()
-            .filter { it.isFile && it.extension == "slang" && it.readText().contains("[shader(") }
-            .sortedBy { it.relativeTo(root).invariantSeparatorsPath }
-            .toList()
-        for (shader in shaders) {
-            val relative = shader.relativeTo(root).invariantSeparatorsPath.removeSuffix(".slang")
+        out.mkdirs()
+        val required = (listOf(root) + includes.files.filter { it.isDirectory })
+            .map { File(it, ARGUMENTS) }
+            .filter { it.isFile }
+            .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
+        val shaders = (listOf(root) + generated.files.filter { it.isDirectory }).filter { it.isDirectory }
+            .flatMap { dir ->
+                dir.walkTopDown().filter { it.isFile && it.extension == "slang" && it.readText().contains("[shader(") }
+                    .map { dir to it }
+            }
+            .sortedBy { (dir, file) -> file.relativeTo(dir).invariantSeparatorsPath }
+        for ((dir, shader) in shaders) {
+            val relative = shader.relativeTo(dir).invariantSeparatorsPath.removeSuffix(".slang")
             val target = File(out, "$relative.spv")
             target.parentFile.mkdirs()
             val log = ByteArrayOutputStream()
@@ -79,7 +95,7 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
                         "-O2", "-I", root.absolutePath,
                         "-o", target.absolutePath,
                     ) + includes.files.filter { it.isDirectory }.flatMap { listOf("-I", it.absolutePath) } +
-                        arguments.get(),
+                        required + arguments.get(),
                 )
                 standardOutput = log
                 errorOutput = log
@@ -87,5 +103,10 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
             }
             check(result.exitValue == 0) { "Slang could not compile $relative.slang:\n$log" }
         }
+    }
+
+    companion object {
+        /** The file of arguments a directory's modules need, beside them. */
+        const val ARGUMENTS = "slangc.arguments"
     }
 }
