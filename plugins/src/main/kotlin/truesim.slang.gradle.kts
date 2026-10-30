@@ -11,8 +11,9 @@
 //
 // Push-constant blocks become Java too: a class per struct of a `[[vk::push_constant]] ConstantBuffer<S>`, named S, in
 // slang.pushPackage (or slang.javaPackage), holding the bytes the block takes and each field's offset as slangc lays it
-// out, so host code writes push constants by name instead of by hand-counted offsets. The `static const`s of the modules
-// in slang.constantModules become Java constants the same way.
+// out, so host code writes push constants by name instead of by hand-counted offsets. With slang.pushBase, each class
+// extends it and is a writer too: a typed setter per field. The `static const`s of the modules in
+// slang.constantModules become Java constants the same way.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -40,6 +41,12 @@ interface SlangExtension {
      * and field offsets. [javaPackage] if unset; without either, none are generated.
      */
     val pushPackage: Property<String>
+
+    /**
+     * The class push-constant layouts extend, e.g. `com.truesim.engine.vulkan.PushConstants`: with it each layout is a
+     * writer too, with a typed setter per field putting the value at its offset. Without it, constants only.
+     */
+    val pushBase: Property<String>
 
     /**
      * Modules (paths under src/main/slang without `.slang`, e.g. `meshlets/common`) whose scalar `static const`s
@@ -78,6 +85,7 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     arguments = slang.arguments
     javaPackage = slang.javaPackage
     pushPackage = slang.pushPackage
+    pushBase = slang.pushBase
     constantModules.convention(emptyList())
     allowAllocation = false
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")

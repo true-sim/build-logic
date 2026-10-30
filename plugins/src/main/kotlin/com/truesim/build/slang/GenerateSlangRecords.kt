@@ -79,6 +79,14 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     abstract val pushPackage: Property<String>
 
     /**
+     * The class push-constant layouts extend, e.g. `com.truesim.engine.vulkan.PushConstants`: with it, each is a writer
+     * too, made once, with a typed setter per field that puts the value at its offset. Without it, constants only.
+     */
+    @get:Input
+    @get:Optional
+    abstract val pushBase: Property<String>
+
+    /**
      * Modules (paths under [sources] without `.slang`, e.g. `meshlets/common`) whose scalar `static const`s (integers,
      * floats and booleans whose values are literals or expressions of the module's earlier constants) become the Java
      * class `<Module>Constants` in [pushPackage] (or [javaPackage]).
@@ -324,7 +332,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
 
     // ------------------------------------------------------------------------------------------------ push constants
 
-    class Offset(val name: String, val offset: Int)
+    class Offset(val name: String, val offset: Int, val size: Int, val type: Map<String, Any?>)
 
     /**
      * Writes a Java class per struct of {@code blocks}: the bytes it takes and each field's byte offset (nested structs'
@@ -369,7 +377,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                     else ((field["binding"] as Map<String, Any?>)["size"] as Number).toInt()
                 val name = block.struct + if (host) "Layout" else ""
                 File(javaOut, pkg.replace('.', '/') + "/$name.java").apply { parentFile.mkdirs() }
-                    .writeText(layoutSource(pkg, block, name, host, bytes, offsets))
+                    .writeText(layoutSource(pkg, block, name, host, bytes, offsets, if (host) null else pushBase.orNull))
             }
         } finally {
             temp.deleteRecursively()
@@ -387,7 +395,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             val name = prefix + field["name"] as String
             val binding = field["binding"] as Map<String, Any?>
             val offset = base + (binding["offset"] as Number).toInt()
-            into += Offset(name, offset)
+            into += Offset(name, offset, (binding["size"] as Number).toInt(), field["type"] as Map<String, Any?>)
             end = maxOf(end, offset + (binding["size"] as Number).toInt())
             val t = field["type"] as Map<String, Any?>
             if (t["kind"] == "struct") {
@@ -398,7 +406,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     }
 
     private fun layoutSource(pkg: String, block: PushBlock, name: String, host: Boolean, bytes: Int,
-        offsets: List<Offset>): String = buildString {
+        offsets: List<Offset>, base: String?): String = buildString {
         append("package $pkg;\n\n")
         append("/**\n")
         if (host) {
@@ -410,16 +418,102 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             append(" * takes and each field's byte offset, as slangc lays it out, so the host writes each value where the\n")
             append(" * shader reads it.\n")
         }
+        if (base != null) {
+            append(" *\n")
+            append(" * <p>A writer too: made once (a pass keeps one), each field set by name at its offset, in any order;\n")
+            append(" * a field not set again keeps its value.\n")
+        }
         append(" */\n")
-        append("public final class $name {\n\n")
+        append("public final class $name${if (base != null) " extends $base" else ""} {\n\n")
         append("    /** Bytes the ${if (host) "struct" else "block"} takes. */\n")
         append("    public static final int BYTES = $bytes;\n")
         for (offset in offsets) {
             append("    /** {@code ${offset.name}}. */\n")
             append("    public static final int ${constant(offset.name)} = ${offset.offset};\n")
         }
-        append("\n    private $name() {\n    }\n}\n")
+        if (base == null) {
+            append("\n    private $name() {\n    }\n}\n")
+            return@buildString
+        }
+        append("\n    public $name() {\n    }\n\n")
+        append("    /** {@value #BYTES}: the whole block. */\n")
+        append("    @Override\n    public int size() {\n        return BYTES;\n    }\n")
+        for (offset in offsets) {
+            setter(name, offset)?.let { append("\n").append(it) }
+        }
+        append("}\n")
     }
+
+    /**
+     * The setter of [offset]'s field in writer [name]: scalars, vectors, pointers, and matrices stored without padding;
+     * null for the rest (arrays, and nested structs themselves, whose fields get setters of their own).
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun setter(name: String, offset: Offset): String? {
+        val type = offset.type
+        val at = constant(offset.name)
+        val method = javaName(offset.name.split('.').mapIndexed { i, part ->
+            if (i == 0) part else part.replaceFirstChar { it.uppercase() }
+        }.joinToString(""))
+        val body = StringBuilder()
+        val params: String
+        val doc: String
+        when (type["kind"]) {
+            "scalar" -> {
+                val scalar = type["scalarType"] as String?
+                val java = SCALARS[scalar] ?: return null
+                params = "$java value"
+                doc = SLANG_NAMES.getValue(scalar!!)
+                body.append(put(java, at, "value"))
+            }
+            "pointer" -> {
+                params = "long address"
+                doc = "a pointer, by device address"
+                body.append(put("long", at, "address"))
+            }
+            "vector" -> {
+                val scalar = (type["elementType"] as Map<String, Any?>)["scalarType"] as String?
+                val java = SCALARS[scalar] ?: return null
+                val count = (type["elementCount"] as Number).toInt()
+                val names = listOf("x", "y", "z", "w").take(count)
+                params = names.joinToString(", ") { "$java $it" }
+                doc = "${SLANG_NAMES.getValue(scalar!!)}$count"
+                val width = if (java == "long") 8 else 4
+                names.forEachIndexed { i, component ->
+                    body.append(put(java, if (i == 0) at else "$at + ${i * width}", component))
+                }
+            }
+            "matrix" -> {
+                val scalar = (type["elementType"] as Map<String, Any?>)["scalarType"] as String?
+                val count = (type["rowCount"] as Number).toInt() * (type["columnCount"] as Number).toInt()
+                if (scalar != "float32" || offset.size != 4 * count) {
+                    return null
+                }
+                params = "float[] values"
+                doc = "$count floats, in the order the shader's matrix layout stores them"
+                body.append("        if (values.length != $count) {\n")
+                body.append("            throw new IllegalArgumentException(\"${offset.name} takes $count floats: \" + values.length);\n")
+                body.append("        }\n")
+                body.append("        for (int i = 0; i < $count; i++) {\n")
+                body.append("            putFloat($at + 4L * i, values[i]);\n")
+                body.append("        }\n")
+            }
+            else -> return null
+        }
+        return "    /** Sets {@code ${offset.name}} ($doc). */\n" +
+            "    public $name $method($params) {\n$body        return this;\n    }\n"
+    }
+
+    /** The statement putting the Java [java] value [value] at [at]. */
+    private fun put(java: String, at: String, value: String): String = when (java) {
+        "int" -> "        putInt($at, $value);\n"
+        "boolean" -> "        putInt($at, $value ? 1 : 0);\n"
+        "float" -> "        putFloat($at, $value);\n"
+        else -> "        putLong($at, $value);\n"
+    }
+
+    /** [name], or `name_` where it is a Java keyword. */
+    private fun javaName(name: String): String = if (name in JAVA_KEYWORDS) "${name}_" else name
 
     /** {@code meshTable} as {@code MESH_TABLE}, {@code occlusion.pyramid} as {@code OCCLUSION_PYRAMID}. */
     private fun constant(name: String): String =
@@ -607,6 +701,17 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         /** A library's records, beside its modules: struct, Java class, kind, bytes, layout signature per line. */
         const val INDEX = "slang-records.index"
 
+        /** The Java type a writer takes for each Slang scalar type it sets. */
+        private val SCALARS = mapOf("uint32" to "int", "int32" to "int", "float32" to "float", "uint64" to "long",
+            "int64" to "long", "bool" to "boolean")
+        private val SLANG_NAMES = mapOf("uint32" to "uint", "int32" to "int", "float32" to "float", "uint64" to "uint64_t",
+            "int64" to "int64_t", "bool" to "bool")
+        private val JAVA_KEYWORDS = setOf("abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
+            "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally",
+            "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native",
+            "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super",
+            "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while",
+            "true", "false", "null", "var", "record", "yield")
         private val ATTRIBUTE = Regex("\\[[^\\]]*]")
         private val RECORD = Regex(
             "\\[(MaterialParameters|MaterialFeature)(?:\\([^)]*\\))?]\\s*(?:\\[[^\\]]*]\\s*)*(?:public\\s+)?" +
