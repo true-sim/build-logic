@@ -11,7 +11,8 @@
 //
 // Push-constant blocks become Java too: a class per struct of a `[[vk::push_constant]] ConstantBuffer<S>`, named S, in
 // slang.pushPackage (or slang.javaPackage), holding the bytes the block takes and each field's offset as slangc lays it
-// out, so host code writes push constants by name instead of by hand-counted offsets.
+// out, so host code writes push constants by name instead of by hand-counted offsets. The `static const`s of the modules
+// in slang.constantModules become Java constants the same way.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -39,6 +40,12 @@ interface SlangExtension {
      * and field offsets. [javaPackage] if unset; without either, none are generated.
      */
     val pushPackage: Property<String>
+
+    /**
+     * Modules (paths under src/main/slang without `.slang`, e.g. `meshlets/common`) whose scalar `static const`s
+     * become a Java class `<Module>Constants` in [pushPackage] (or [javaPackage]).
+     */
+    val constantModules: ListProperty<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -48,6 +55,7 @@ val slang = extensions.create<SlangExtension>("slang").apply {
             ?: throw GradleException("Slang $v is not pinned by build-logic: set slang.checksum for it")
     })
     arguments.convention(emptyList())
+    constantModules.convention(emptyList())
 }
 
 fun registerLibraries(name: String, classpath: String) = tasks.register<CollectSlangLibraries>(name) {
@@ -70,6 +78,7 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     arguments = slang.arguments
     javaPackage = slang.javaPackage
     pushPackage = slang.pushPackage
+    constantModules.convention(emptyList())
     allowAllocation = false
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
     slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")
@@ -78,6 +87,7 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
 }
 
 val mainRecords = registerRecords("generateSlangRecords", "main", mainLibraries)
+mainRecords.configure { constantModules = slang.constantModules } // modules of the main sources
 pluginManager.withPlugin("truesim.allocation-free") {
     tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
 }
