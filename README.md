@@ -267,6 +267,10 @@ Every struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java
 writes `memPutLong(push + DrawPush.MESH_TABLE, ...)` instead of hand-counted offsets, so a field added or moved in
 the shader moves the Java with it. Two blocks' structs of one name in one project fail the build: each becomes a class.
 
+A struct marked `[HostLayout]` (declare the attribute: `[__AttributeUsage(_AttributeTargets.Struct)] public struct
+HostLayoutAttribute {};`) becomes `SLayout` the same way, laid out as shaders read it through pointers from buffers:
+for records the host writes into buffers, such as a material table's slots or a scene's instances.
+
 ```kotlin
 slang {
     pushPackage = "com.example.game.push"
