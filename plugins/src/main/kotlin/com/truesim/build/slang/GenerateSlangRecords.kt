@@ -30,13 +30,18 @@ import javax.inject.Inject
  *   [javaPackage]: its fields with the struct's initializers as `DEFAULTS`, `[Range]` checks, withers, the byte layout
  *   slangc itself gives the struct (from its reflection: pointer reads use scalar layout), a writer, a constant per
  *   field for writing one value in place, and `fromValues` for data by field name;
- * - a `[MaterialType("name")]` struct (an `IMaterial` with `typealias Parameters = ...`) gets its visibility-buffer
- *   entry points, plain and with inline ray shadows, as Slang sources under [slangOutput], and a Java class of the same
- *   name holding its `MaterialType`.
+ * - a `[MaterialType("name")]` struct (an `IMaterial` with `typealias Parameters = ...`) gets its entry points as Slang
+ *   sources under [slangOutput] and a Java class of the same name holding its `TYPE`, both from the templates in a
+ *   `material-types` directory of the sources or a library (engine-render ships them beside its `materials` module):
+ *   `type.properties` (`class`, the Java class of `TYPE`, and `factory`, the expression making it, with `{name}`,
+ *   `{parameters}` and `{features}` filled in) and an `entry<Suffix>.slang.template` per entry-point file
+ *   `<name><Suffix>.slang` (with `{name}`, `{struct}` and `{module}` filled in);
  *
  * - a struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in [pushPackage] (or
  *   [javaPackage]): the bytes the block takes and each field's byte offset (nested structs' fields by path), from
- *   slangc's reflection of the block.
+ *   slangc's reflection of the block; a `[HostLayout]` struct, which the host writes into buffers, becomes `SLayout`;
+ * - the scalar `static const`s of each module of [constantModules] become a Java class of constants, so the host uses
+ *   the shader's values instead of copies.
  *
  * Structs of libraries (other projects' modules, on [includes]) are referred to through their `slang-records.index`,
  * which this task writes for its own under [indexOutput] and which ships in the jar beside the modules; a layout that
@@ -73,6 +78,14 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Optional
     abstract val pushPackage: Property<String>
 
+    /**
+     * Modules (paths under [sources] without `.slang`, e.g. `meshlets/common`) whose scalar `static const`s (integers,
+     * floats and booleans whose values are literals or expressions of the module's earlier constants) become the Java
+     * class `<Module>Constants` in [pushPackage] (or [javaPackage]).
+     */
+    @get:Input
+    abstract val constantModules: ListProperty<String>
+
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -97,9 +110,15 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         val index = File(indexOut, INDEX)
         val root = sources.get().asFile
         val declared = if (root.isDirectory) scan(root) else Declared(emptyList(), emptyList(), emptyList(), emptyList())
-        (pushPackage.orNull ?: javaPackage.orNull)?.let { pkg ->
+        val layoutPackage = pushPackage.orNull ?: javaPackage.orNull
+        layoutPackage?.let { pkg ->
             writeLayouts(root, declared.pushes, pkg, javaOut, false)
             writeLayouts(root, declared.hosts, pkg, javaOut, true)
+        }
+        if (constantModules.get().isNotEmpty()) {
+            val pkg = layoutPackage
+                ?: throw IllegalStateException("slang.constantModules need slang.pushPackage or slang.javaPackage")
+            constantModules.get().forEach { writeConstants(root, it, pkg, javaOut) }
         }
         if (declared.records.isEmpty() && declared.types.isEmpty()) {
             index.writeText("")
@@ -132,10 +151,11 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             records += listOf(record.name, "$pkg.${record.name}", record.kind, struct.bytes().toString(),
                 struct.signature()).joinToString(" ")
         }
+        val templates = if (declared.types.isEmpty()) null else materialTemplates(root)
         for (type in declared.types) {
-            writeEntryPoints(slangOut, type)
+            writeEntryPoints(slangOut, type, templates!!)
             File(javaOut, pkg.replace('.', '/') + "/${type.struct}.java").apply { parentFile.mkdirs() }
-                .writeText(typeSource(pkg, type, javaClass(type.parameters), reflected[type.parameters]
+                .writeText(typeSource(pkg, type, templates!!, javaClass(type.parameters), reflected[type.parameters]
                     ?: throw IllegalStateException("${type.struct}'s parameters ${type.parameters} are no record")))
         }
         index.writeText(records.joinToString("\n", postfix = "\n"))
@@ -460,43 +480,127 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
 
     // ------------------------------------------------------------------------------------------------ material types
 
-    private fun writeEntryPoints(out: File, type: MaterialTypeDecl) {
-        for (traced in listOf(false, true)) {
-            val suffix = if (traced) "Traced" else ""
-            File(out, "material-types/${type.name}$suffix.slang").apply { parentFile.mkdirs() }.writeText(buildString {
-                append("// Generated from ${type.module}'s ${type.struct}: its shading of the visibility buffer")
-                append(if (traced) ", with inline ray shadows.\n" else ".\n")
-                append("import visibility.resolve;\n")
-                if (traced) {
-                    append("import raytracing;\n")
-                }
-                append("import ${type.module};\n\n[shader(\"compute\")]\n[numthreads(8, 8, 1)]\n")
-                append("void ${type.name}${suffix}Main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)\n")
-                append("{\n    shadeTiles<${type.struct}>(${if (traced) "QueryRays" else "NoRays"}(), group, thread);\n}\n")
-            })
+    /** A material type's templates: the class and factory of its `TYPE`, and the entry-point sources by suffix. */
+    class MaterialTemplates(val typeClass: String, val factory: String, val entryPoints: Map<String, String>)
+
+    /** The first `material-types` templates of the sources and the includes. */
+    private fun materialTemplates(root: File): MaterialTemplates {
+        val dir = (listOf(root) + includes.files).map { File(it, "material-types") }
+            .firstOrNull { File(it, "type.properties").isFile }
+            ?: throw IllegalStateException("Material types need the templates of a material-types directory " +
+                "(type.properties and entry*.slang.template), in the sources or a library such as engine-render")
+        val properties = java.util.Properties().apply { File(dir, "type.properties").reader().use { load(it) } }
+        val entryPoints = dir.listFiles { file -> file.name.startsWith("entry") && file.name.endsWith(".slang.template") }!!
+            .sortedBy { it.name }
+            .associate { it.name.removePrefix("entry").removeSuffix(".slang.template") to it.readText() }
+        fun property(key: String) = properties.getProperty(key)
+            ?: throw IllegalStateException("$dir/type.properties needs $key")
+        return MaterialTemplates(property("class"), property("factory"), entryPoints)
+    }
+
+    private fun writeEntryPoints(out: File, type: MaterialTypeDecl, templates: MaterialTemplates) {
+        for ((suffix, template) in templates.entryPoints) {
+            File(out, "material-types/${type.name}$suffix.slang").apply { parentFile.mkdirs() }.writeText(
+                "// Generated from ${type.module}'s ${type.struct}: its material type's entry points.\n" +
+                    template.replace("{name}", type.name).replace("{struct}", type.struct)
+                        .replace("{module}", type.module))
         }
     }
 
-    private fun typeSource(pkg: String, type: MaterialTypeDecl, parameters: String, struct: Struct): String {
+    private fun typeSource(pkg: String, type: MaterialTypeDecl, templates: MaterialTemplates, parameters: String,
+        struct: Struct): String {
         val features = (struct.attributes["MaterialParameters"]?.firstOrNull() as Number?)?.toInt() ?: 0
         val simple = parameters.substringAfterLast('.')
+        val typeClass = templates.typeClass
+        val factory = templates.factory.replace("{name}", type.name).replace("{parameters}", simple)
+            .replace("{features}", features.toString())
         return """
             |package $pkg;
             |
-            |import com.truesim.engine.render.MaterialType;
+            |import $typeClass;
             |${if (parameters.substringBeforeLast('.') != pkg) "import $parameters;\n" else ""}
             |/** Generated from ${type.module}'s {@code ${type.struct}}: the material type {@code ${type.name}}. */
             |public final class ${type.struct} {
             |
-            |    /** The type, to register with {@code Materials}: its shaders, by the generated entry points. */
-            |    public static final MaterialType TYPE = new MaterialType("${type.name}", $simple.class,
-            |        $simple::fromValues, $features, "shaders/material-types/${type.name}.spv", "${type.name}Main",
-            |        "shaders/material-types/${type.name}Traced.spv", "${type.name}TracedMain");
+            |    /** The type, by its generated entry points. */
+            |    public static final ${typeClass.substringAfterLast('.')} TYPE = $factory;
             |
             |    private ${type.struct}() {
             |    }
             |}
             |""".trimMargin()
+    }
+
+    // ------------------------------------------------------------------------------------------------ constants
+
+    /** The scalar `static const`s of {@code module} as the Java class `<Module>Constants`. */
+    private fun writeConstants(root: File, module: String, pkg: String, javaOut: File) {
+        val file = File(root, "$module.slang")
+        check(file.isFile) { "slang.constantModules: no module $module under $root" }
+        val known = mutableMapOf<String, String>()
+        val name = module.substringAfterLast('/').split('_', '-', '.')
+            .joinToString("") { part -> part.replaceFirstChar { it.uppercase() } } + "Constants"
+        val java = buildString {
+            append("package $pkg;\n\n")
+            append("/** Generated from $module's {@code static const}s: the shaders' values, for the host. */\n")
+            append("public final class $name {\n\n")
+            for (match in CONSTANT.findAll(file.readText())) {
+                val (slangType, constant, value, comment) = match.destructured
+                val type = JAVA_TYPES[slangType] ?: continue
+                val expression = javaExpression(value.trim(), slangType, type, known) ?: continue
+                known[constant] = type
+                append("    /** ${comment.trim().ifEmpty { "{@code $constant}." }.replace("*/", "* /")} */\n")
+                append("    public static final $type $constant = $expression;\n")
+            }
+            append("\n    private $name() {\n    }\n}\n")
+        }
+        File(javaOut, pkg.replace('.', '/') + "/$name.java").apply { parentFile.mkdirs() }.writeText(java)
+    }
+
+    /**
+     * {@code value}, a Slang constant's initializer, as a Java expression of {@code type}; null unless it is literals,
+     * operators and the module's earlier constants ({@code known}). Unsigned shifts right stay unsigned.
+     */
+    private fun javaExpression(value: String, slangType: String, type: String, known: Map<String, String>): String? {
+        val tokens = TOKEN.findAll(value).map { it.value.trim() }.toList()
+        if (tokens.joinToString("") != value.replace(Regex("\\s+"), "")) {
+            return null // something no token covers
+        }
+        val unsigned = slangType.startsWith("u")
+        val parts = tokens.map { token ->
+            when {
+                token[0].isDigit() -> number(token, type) ?: return null
+                token == "true" || token == "false" -> if (type == "boolean") token else return null
+                token[0].isLetter() || token[0] == '_' -> if (known.containsKey(token)) token else return null
+                token == ">>" && unsigned -> ">>>"
+                else -> token
+            }
+        }
+        return parts.joinToString(" ").replace("( ", "(").replace(" )", ")").replace("~ ", "~")
+    }
+
+    /** A Slang number literal as a Java literal of {@code type}, or null where it does not fit. */
+    private fun number(literal: String, type: String): String? {
+        val bare = literal.trimEnd('u', 'U', 'l', 'L')
+        val float = bare.contains('.') || (!bare.startsWith("0x", true) && bare.contains('e', true)) ||
+            (!bare.startsWith("0x", true) && bare.endsWith('f', true))
+        return when (type) {
+            "float" -> bare.trimEnd('f', 'F') + "f"
+            "double" -> bare.trimEnd('f', 'F')
+            "long" -> if (float) null else bare + "L"
+            "int" -> when {
+                float -> null
+                bare.startsWith("0x", true) -> if (bare.length - 2 <= 8) bare else null
+                else -> bare.toLongOrNull()?.let { n ->
+                    when {
+                        n <= Int.MAX_VALUE -> bare
+                        n <= 0xFFFFFFFFL -> "(int) ${bare}L" // a uint past int's range: the same bits
+                        else -> null
+                    }
+                }
+            }
+            else -> null
+        }
     }
 
     companion object {
@@ -514,5 +618,13 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             Regex("\\[\\[vk::push_constant]]\\s*(?:(?:public|internal|uniform)\\s+)*ConstantBuffer<(\\w+)>")
         private val PARAMETERS = Regex("typealias\\s+Parameters\\s*=\\s*(\\w+)\\s*;")
         private val FIELD = Regex("(\\w+)\\s+(\\w+)\\s*(=\\s*(.+))?", RegexOption.DOT_MATCHES_ALL)
+        private val CONSTANT = Regex(
+            "^[ \\t]*(?:(?:public|internal)\\s+)?static\\s+const\\s+(\\w+)\\s+(\\w+)\\s*=\\s*([^;]+);[ \\t]*(?://[ \\t]*(.*))?$",
+            RegexOption.MULTILINE)
+        private val TOKEN = Regex(
+            "\\s*(0[xX][0-9a-fA-F]+[uUlL]*|\\d+\\.\\d*(?:[eE][-+]?\\d+)?[fF]?|\\d+[eE][-+]?\\d+[fF]?|\\d+[uUlLfF]*|" +
+                "[A-Za-z_]\\w*|<<|>>|[-+*/%&|^~()])")
+        private val JAVA_TYPES = mapOf("int" to "int", "uint" to "int", "int32_t" to "int", "uint32_t" to "int",
+            "int64_t" to "long", "uint64_t" to "long", "float" to "float", "double" to "double", "bool" to "boolean")
     }
 }

@@ -251,9 +251,12 @@ slang {
   its fields (`[Color]` as `Color`, vectors as `Vec2` to `Vec4`, nested records as theirs), the struct's initializers
   as `DEFAULTS`, `[Range]` checks, withers, the byte layout from slangc's reflection of the struct, a writer, a
   constant per field for writing one value in place, and `fromValues` for data by field name.
-- A `[MaterialType("name")]` struct (an `IMaterial` with `typealias Parameters = ...`) gets its visibility-buffer entry
-  points generated (plain, and with inline ray shadows), compiled with the shaders, and a Java class of the same name
-  holding its `MaterialType`.
+- A `[MaterialType("name")]` struct (an `IMaterial` with `typealias Parameters = ...`) gets its entry points generated
+  and compiled with the shaders, and a Java class of the same name holding its `TYPE`. Both come from the templates of
+  a `material-types` directory, in the project's Slang sources or a library's (engine-render ships them beside its
+  `materials` module): `type.properties` with `class`, the Java class of `TYPE`, and `factory`, the expression making
+  it (`{name}`, `{parameters}` and `{features}` filled in), and one `entry<Suffix>.slang.template` per entry-point
+  file `<name><Suffix>.slang` (`{name}`, `{struct}` and `{module}` filled in). The plugin itself knows no engine.
 - Structs of other projects are found through `slang-records.index`, shipped in the jar beside the modules, so a
   game's record can nest the engine's. A nested struct whose layout no longer matches its index fails the build.
 - Record structs must be `public` in their Slang module. With `truesim.allocation-free` the records are marked
@@ -274,8 +277,16 @@ for records the host writes into buffers, such as a material table's slots or a 
 ```kotlin
 slang {
     pushPackage = "com.example.game.push"
+    constantModules = listOf("game/common") // game/common.slang's static consts as CommonConstants
 }
 ```
+
+### Constants
+
+The scalar `static const`s of the modules in `slang.constantModules` (paths under `src/main/slang` without `.slang`)
+become a Java class `<Module>Constants` in the layouts' package: integers, floats and booleans whose values are
+literals or expressions of the module's earlier constants, with their trailing comments as Javadoc. `uint`s become
+`int`s with the same bits, and their shifts right stay unsigned. Vectors and other values are left out.
 
 ## Vulkan on CI
 
