@@ -20,6 +20,7 @@ kotlin {
 dependencies {
     implementation(libs.foojay.resolver)
     implementation(libs.asm.tree)
+    implementation(libs.asm.analysis) // the purity check follows values to where they came from
 }
 
 // Ship the shared catalog and lombok.config inside the plugin jar so `truesim.settings` can install them,

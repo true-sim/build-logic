@@ -15,4 +15,10 @@ abstract class AllocationFreeExtension {
 
     /** APIs allowed even if they match [forbiddenApis]. */
     abstract val allowedApis: ListProperty<String>
+
+    /** The purity check's pass body interfaces (binary names); the frame graph's `PassBody` by default. */
+    abstract val passBodies: ListProperty<String>
+
+    /** The purity check's builders, which `build` methods take first; the frame graph's `GraphBuilder` by default. */
+    abstract val graphBuilders: ListProperty<String>
 }
