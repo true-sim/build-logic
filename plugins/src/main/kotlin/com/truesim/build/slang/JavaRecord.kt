@@ -182,6 +182,7 @@ internal class JavaRecord(
             }
         }
         body.append("    }\n")
+        body.append(textures())
         if (parameters) {
             body.append(mask())
             val features = (struct.attributes["MaterialParameters"]?.firstOrNull() as Number?)?.toInt() ?: 0
@@ -196,6 +197,25 @@ internal class JavaRecord(
     }
 
     private fun featureName() = name.removeSuffix("Parameters").replaceFirstChar { it.lowercase() }
+
+    /**
+     * Every [Texture] field's value given to a consumer, nested records' too: for Materials to count the materials
+     * naming each texture. Nothing for records without (the interface's default).
+     */
+    private fun textures(): String {
+        val calls = members.mapNotNull {
+            when {
+                it.kind == Kind.RECORD -> "        ${it.name}.textures(each);\n"
+                it.kind == Kind.I32 && texture(it.field) != null -> "        each.accept(${it.name});\n"
+                else -> null
+            }
+        }
+        if (calls.isEmpty()) {
+            return ""
+        }
+        imports += "java.util.function.IntConsumer"
+        return "\n    @Override\n    public void textures(IntConsumer each) {\n" + calls.joinToString("") + "    }\n"
+    }
 
     private fun fromValue(m: Member): String {
         val d = "DEFAULTS.${m.name}()"
@@ -225,6 +245,7 @@ internal class JavaRecord(
                 f.scalar == "float32" -> range(f)?.let { (lo, hi) ->
                     "MaterialField.f32($name.class, \"$path\", $offset, ${floatLiteral(lo)}, ${floatLiteral(hi)})"
                 } ?: "MaterialField.f32($name.class, \"$path\", $offset)"
+                texture(f) != null -> "MaterialField.texture($name.class, \"$path\", $offset)"
                 else -> "MaterialField.i32($name.class, \"$path\", $offset)"
             }
             body.append("    /** {@code $path}, to set in place: {@code Materials.update}. */\n")
