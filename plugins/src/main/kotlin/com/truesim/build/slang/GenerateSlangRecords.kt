@@ -240,7 +240,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             val match = FIELD.matchEntire(plain)
                 ?: throw IllegalStateException("$struct: cannot read the field `$plain` (material records hold fields)")
             result[match.groupValues[2]] =
-                Declaration(match.groupValues[1], match.groupValues[2], match.groupValues[4].trim().ifEmpty { null })
+                Declaration(match.groupValues[1].trim(), match.groupValues[2], match.groupValues[4].trim().ifEmpty { null })
         }
         return result
     }
@@ -541,8 +541,11 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                     (t["elementCount"] as Number).toInt(), null, attributes(field["userAttribs"]))
                 "struct" -> Field(field["name"] as String, offset, size, null, 1, struct(t),
                     attributes(field["userAttribs"]))
+                // A buffer's address (T*): the Java record takes the buffer.
+                "pointer" -> Field(field["name"] as String, offset, size, POINTER, 1, null,
+                    attributes(field["userAttribs"]))
                 else -> throw IllegalStateException(
-                    "${type["name"]}.${field["name"]}: material records hold scalars, vectors and records")
+                    "${type["name"]}.${field["name"]}: material records hold scalars, vectors, pointers and records")
             }
         },
     )
@@ -698,6 +701,9 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     }
 
     companion object {
+        /** The scalar of a pointer field ([Field.scalar]): a buffer's address. */
+        const val POINTER = "pointer"
+
         /** A library's records, beside its modules: struct, Java class, kind, bytes, layout signature per line. */
         const val INDEX = "slang-records.index"
 
@@ -722,7 +728,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         private val PUSH =
             Regex("\\[\\[vk::push_constant]]\\s*(?:(?:public|internal|uniform)\\s+)*ConstantBuffer<(\\w+)>")
         private val PARAMETERS = Regex("typealias\\s+Parameters\\s*=\\s*(\\w+)\\s*;")
-        private val FIELD = Regex("(\\w+)\\s+(\\w+)\\s*(=\\s*(.+))?", RegexOption.DOT_MATCHES_ALL)
+        private val FIELD = Regex("(\\w+\\s*\\**)\\s*(\\w+)\\s*(=\\s*(.+))?", RegexOption.DOT_MATCHES_ALL) // T* too
         private val CONSTANT = Regex(
             "^[ \\t]*(?:(?:public|internal)\\s+)?static\\s+const\\s+(\\w+)\\s+(\\w+)\\s*=\\s*([^;]+);[ \\t]*(?://[ \\t]*(.*))?$",
             RegexOption.MULTILINE)

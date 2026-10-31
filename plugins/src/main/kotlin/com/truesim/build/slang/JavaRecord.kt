@@ -16,7 +16,7 @@ internal class JavaRecord(
     private val name = record.name
     private val imports = sortedSetOf<String>()
 
-    private enum class Kind { F32, I32, VEC, COLOR, RECORD }
+    private enum class Kind { F32, I32, VEC, COLOR, RECORD, BUFFER }
 
     private class Member(
         val field: GenerateSlangRecords.Field,
@@ -36,6 +36,11 @@ internal class JavaRecord(
             check(declared == null) { "$name.${field.name}: a nested record takes its own defaults" }
             val type = simple(javaClass(nested.name))
             return Member(field, Kind.RECORD, type, "$type.DEFAULTS")
+        }
+        if (field.scalar == GenerateSlangRecords.POINTER) {
+            check(declared == null) { "$name.${field.name}: a buffer has no default but none (null)" }
+            imports += "com.truesim.engine.vulkan.DeviceBuffer"
+            return Member(field, Kind.BUFFER, "DeviceBuffer", "null")
         }
         val numbers = declared?.let { literal(it) }
         val float = field.scalar == "float32"
@@ -121,7 +126,12 @@ internal class JavaRecord(
         body.append("    private static final ValueLayout.OfFloat F32 =\n")
         body.append("        ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
         body.append("    private static final ValueLayout.OfInt I32 =\n")
-        body.append("        ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n\n")
+        body.append("        ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
+        if (members.any { it.kind == Kind.BUFFER }) {
+            body.append("    private static final ValueLayout.OfLong I64 =\n")
+            body.append("        ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
+        }
+        body.append("\n")
         body.append("    /** Its bytes in a material's block. */\n")
         body.append("    public static final int BYTES = ${struct.bytes()};\n\n")
         body.append("    /** The Slang initializers. */\n")
@@ -171,6 +181,8 @@ internal class JavaRecord(
             when (m.kind) {
                 Kind.F32 -> body.append("        segment.set(F32, $at, ${m.name});\n")
                 Kind.I32 -> body.append("        segment.set(I32, $at, ${m.name});\n")
+                Kind.BUFFER ->
+                    body.append("        segment.set(I64, $at, ${m.name} == null ? 0 : ${m.name}.deviceAddress());\n")
                 Kind.RECORD -> body.append("        ${m.name}.write(segment, $at);\n")
                 Kind.VEC, Kind.COLOR -> {
                     val parts = if (m.kind == Kind.COLOR) listOf("r", "g", "b", "a") else listOf("x", "y", "z", "w")
@@ -183,6 +195,7 @@ internal class JavaRecord(
         }
         body.append("    }\n")
         body.append(textures())
+        body.append(buffers())
         if (parameters) {
             body.append(mask())
             val features = (struct.attributes["MaterialParameters"]?.firstOrNull() as Number?)?.toInt() ?: 0
@@ -199,14 +212,35 @@ internal class JavaRecord(
     private fun featureName() = name.removeSuffix("Parameters").replaceFirstChar { it.lowercase() }
 
     /**
+     * Every buffer field (T*) given to a consumer with its offset past a base, nested records' too: for Materials to
+     * write their addresses as they change. Nothing for records without (the interface's default).
+     */
+    private fun buffers(): String {
+        if (members.none { it.kind == Kind.BUFFER || it.kind == Kind.RECORD }) {
+            return ""
+        }
+        imports += "com.truesim.engine.render.MaterialBuffers"
+        val calls = members.mapNotNull {
+            when (it.kind) {
+                // this.: a field may be named as the parameters are (CarPaint's base)
+                Kind.BUFFER -> "        each.accept(base + ${it.field.offset}, this.${it.name});\n"
+                Kind.RECORD -> "        this.${it.name}.buffers(base + ${it.field.offset}, each);\n"
+                else -> null
+            }
+        }
+        return "\n    @Override\n    public void buffers(long base, MaterialBuffers each) {\n" +
+            calls.joinToString("") + "    }\n"
+    }
+
+    /**
      * Every [Texture] field's value given to a consumer, nested records' too: for Materials to count the materials
      * naming each texture. Nothing for records without (the interface's default).
      */
     private fun textures(): String {
         val calls = members.mapNotNull {
             when {
-                it.kind == Kind.RECORD -> "        ${it.name}.textures(each);\n"
-                it.kind == Kind.I32 && texture(it.field) != null -> "        each.accept(${it.name});\n"
+                it.kind == Kind.RECORD -> "        this.${it.name}.textures(each);\n"
+                it.kind == Kind.I32 && texture(it.field) != null -> "        each.accept(this.${it.name});\n"
                 else -> null
             }
         }
@@ -222,6 +256,7 @@ internal class JavaRecord(
         return when (m.kind) {
             Kind.RECORD -> "${m.javaType}.fromValues(values.nested(\"${m.name}\"))"
             Kind.F32 -> "values.f32(\"${m.name}\", $d)"
+            Kind.BUFFER -> "values.buffer(\"${m.name}\", $d)"
             Kind.I32 -> texture(m.field)?.let { "values.texture(\"${m.name}\", $it, $d)" }
                 ?: "values.i32(\"${m.name}\", $d)"
             Kind.COLOR -> "values.color(\"${m.name}\", $d)"
@@ -241,6 +276,7 @@ internal class JavaRecord(
             val constant = path.split('.').joinToString("_") { snake(it) }
             val offset = base + f.offset
             val make = when {
+                f.scalar == GenerateSlangRecords.POINTER -> "MaterialField.buffer($name.class, \"$path\", $offset)"
                 f.count > 1 -> "MaterialField.floats($name.class, \"$path\", $offset, ${f.count})"
                 f.scalar == "float32" -> range(f)?.let { (lo, hi) ->
                     "MaterialField.f32($name.class, \"$path\", $offset, ${floatLiteral(lo)}, ${floatLiteral(hi)})"
