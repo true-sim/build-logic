@@ -14,6 +14,10 @@
 // out, so host code writes push constants by name instead of by hand-counted offsets. With slang.pushBase, each class
 // extends it and is a writer too: a typed setter per field. The `static const`s of the modules in
 // slang.constantModules become Java constants the same way.
+//
+// Particle modules (`[ParticleModule("name")]` structs, engine-render's particles) of a project and its libraries are
+// collected into one interpreting kernel: their opcodes and dispatch, generated from the templates engine-render ships,
+// and a Java class listing them, slang.particleModules (the test sources' the same name prefixed with Test).
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -53,6 +57,13 @@ interface SlangExtension {
      * become a Java class `<Module>Constants` in [pushPackage] (or [javaPackage]).
      */
     val constantModules: ListProperty<String>
+
+    /**
+     * The Java class listing the particle modules of the project and its libraries, e.g.
+     * `com.example.game.GameModules`; needed once the project's shaders declare any. The test sources' listing is the
+     * same name with its simple name prefixed with `Test`.
+     */
+    val particleModules: Property<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -76,7 +87,7 @@ val testLibraries = registerLibraries("testSlangLibraries", "testRuntimeClasspat
 
 fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>) =
     tasks.register<GenerateSlangRecords>(name) {
-    description = "Generates Java and entry points from the $sourceSet Slang material records."
+    description = "Generates Java and entry points from the $sourceSet Slang material records and particle modules."
     sources = layout.projectDirectory.dir("src/$sourceSet/slang")
     includes.from(layout.projectDirectory.dir("src/main/slang"))
     includes.from(libraries.flatMap { it.output })
@@ -95,13 +106,20 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
 }
 
 val mainRecords = registerRecords("generateSlangRecords", "main", mainLibraries)
-mainRecords.configure { constantModules = slang.constantModules } // modules of the main sources
+mainRecords.configure {
+    constantModules = slang.constantModules // modules of the main sources
+    particleModules = slang.particleModules
+}
 pluginManager.withPlugin("truesim.allocation-free") {
     tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
 }
 val testRecords = registerRecords("generateTestSlangRecords", "test", testLibraries)
 testRecords.configure {
     includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
+    particleModules = slang.particleModules.map { name ->
+        val pkg = name.substringBeforeLast('.', "")
+        (if (pkg.isEmpty()) "" else "$pkg.") + "Test" + name.substringAfterLast('.')
+    }
 }
 
 fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>,

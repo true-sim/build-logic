@@ -37,6 +37,9 @@ import javax.inject.Inject
  *   `{parameters}` and `{features}` filled in) and an `entry<Suffix>.slang.template` per entry-point file
  *   `<name><Suffix>.slang` (with `{name}`, `{struct}` and `{module}` filled in);
  *
+ * - the `[ParticleModule("name")]` structs of the sources and their libraries are collected into one interpreting
+ *   kernel's dispatch and the Java class [particleModules] listing them ([ParticleModules]);
+ *
  * - a struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in [pushPackage] (or
  *   [javaPackage]): the bytes the block takes and each field's byte offset (nested structs' fields by path), from
  *   slangc's reflection of the block; a `[HostLayout]` struct, which the host writes into buffers, becomes `SLayout`;
@@ -94,6 +97,14 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Input
     abstract val constantModules: ListProperty<String>
 
+    /**
+     * The Java class listing the particle modules (`[ParticleModule]` structs) of the sources and their libraries, e.g.
+     * `com.example.game.GameModules`; needed once the sources declare any.
+     */
+    @get:Input
+    @get:Optional
+    abstract val particleModules: Property<String>
+
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -118,6 +129,13 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         val index = File(indexOut, INDEX)
         val root = sources.get().asFile
         val declared = if (root.isDirectory) scan(root) else Declared(emptyList(), emptyList(), emptyList(), emptyList())
+        // The particle modules' dispatch first: modules including it (the kernel's, with its push constants) need it
+        val modules = ParticleModules(root, includes.files)
+        File(indexOut, ParticleModules.INDEX).writeText(if (!modules.any()) "" else {
+            val listing = particleModules.orNull ?: throw IllegalStateException(
+                "Particle modules need slang.particleModules, the generated Java class listing them")
+            modules.generate(listing, javaOut, slangOut).joinToString("\n", postfix = "\n")
+        })
         val layoutPackage = pushPackage.orNull ?: javaPackage.orNull
         layoutPackage?.let { pkg ->
             writeLayouts(root, declared.pushes, pkg, javaOut, false)
@@ -245,9 +263,6 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         return result
     }
 
-    private fun withoutComments(text: String) =
-        text.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ").replace(Regex("//[^\n]*"), " ")
-
     // ------------------------------------------------------------------------------------------------ the layouts
 
     class Field(
@@ -310,7 +325,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     private fun compileProbe(slangc: File, root: File, probe: File, what: String): Map<String, Any?> {
         val dir = probe.parentFile
         val json = File(dir, probe.nameWithoutExtension + ".json")
-        val includeDirs = listOf(root) + includes.files.filter { it.isDirectory }
+        val includeDirs = listOf(root) + includes.files.filter { it.isDirectory } + slangOutput.get().asFile
         val required = includeDirs.map { File(it, CompileSlang.ARGUMENTS) }.filter { it.isFile }
             .flatMap { it.readText().split(Regex("\\s+")).filter(String::isNotEmpty) }
         val log = ByteArrayOutputStream()
@@ -701,6 +716,10 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     }
 
     companion object {
+        /** {@code text} without its comments. */
+        internal fun withoutComments(text: String) =
+            text.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ").replace(Regex("//[^\n]*"), " ")
+
         /** The scalar of a pointer field ([Field.scalar]): a buffer's address. */
         const val POINTER = "pointer"
 
