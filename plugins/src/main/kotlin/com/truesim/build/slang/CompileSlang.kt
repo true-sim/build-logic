@@ -36,7 +36,10 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val sources: DirectoryProperty
 
-    /** Directories of generated shaders, compiled as the sources' (at their paths relative to the directory). */
+    /**
+     * Directories of generated shaders, compiled as the sources' (at their paths relative to the directory), and on the
+     * include path: a generated file may be included, as particle modules' dispatch is.
+     */
     @get:InputFiles
     @get:PathSensitive(PathSensitivity.RELATIVE)
     abstract val generated: ConfigurableFileCollection
@@ -94,7 +97,8 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
                         "-warnings-as-errors", "all",
                         "-O2", "-I", root.absolutePath,
                         "-o", target.absolutePath,
-                    ) + includes.files.filter { it.isDirectory }.flatMap { listOf("-I", it.absolutePath) } +
+                    ) + (includes.files + generated.files).filter { it.isDirectory }
+                        .flatMap { listOf("-I", it.absolutePath) } +
                         required + arguments.get(),
                 )
                 standardOutput = log

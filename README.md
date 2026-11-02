@@ -262,6 +262,56 @@ slang {
 - Record structs must be `public` in their Slang module. With `truesim.allocation-free` the records are marked
   `@AllowAllocation`.
 
+### Particle modules
+
+Engine-render's particles are simulated by one interpreting kernel; each module (gravity, a shape, a game's force) is a
+Slang struct marked `[ParticleModule("name")]`, which the build collects, with those of the project's libraries, into
+the kernel's dispatch and a Java listing. Unlike a material type, which gets entry points of its own, every module goes
+into the one kernel: a collecting mode.
+
+```kotlin
+slang {
+    particleModules = "com.example.game.GameModules" // the generated listing; the test sources' TestGameModules
+}
+```
+
+- A module's struct holds its fields (their Slang types are kinds the templates name; their initializers are their
+  fallbacks; read in alphabetical order of their names) and a function per stage it has (the templates' `stages`).
+  `[ModuleCapability("NAME")]` puts its case and its module's import under the templates' define for it;
+  `[BuiltInTwin]` or `[ModuleTwin("java.Class")]` gives its Java type a CPU target and that twin.
+- Modules are numbered in a fixed order, their opcodes: the libraries' as their `particle-modules.index` (shipped in
+  the jar beside the modules) numbers them, then the project's by file and place in it.
+- Generated from the templates of a `particle-modules` directory, in the sources or a library's (engine-render ships
+  them): `modules.properties` (the stages and each one's call and Java stage, field kinds with their words, read
+  expression and Java fallback, capability defines, the Java type's pieces), `dispatch.slang.template` (`{imports}`,
+  `{opcodes}`, `{count}`, `{cases:<stage>}`) written to `particle-modules/dispatch.slang` on the include path,
+  `Modules.java.template` (`{package}`, `{class}`, `{own}`, `{libraryTypes}`, `{names}`, `{stages}`, `{entry}`), and,
+  for a project whose modules extend its libraries', `entry<Suffix>.slang.template` as kernel variants
+  `particle-modules/<Class><Suffix>.slang`. The plugin itself knows no engine.
+- Fails the build: two modules of one name (or struct name), more fields than `fields.max`, a field of a type the
+  templates have no kind for, a module without a stage function or with stages of different Java stages, more
+  modules than `opcodes.max` + 1, and modules without `slang.particleModules`.
+
+Adding a module is one struct (and, for CPU emitters, its Java twin); see engine-render's README and scene's
+`docs/effects.md` (E24):
+
+```slang
+import particles.particle;
+
+[ParticleModule("game.gust")]
+[ModuleTwin("com.example.game.GustTwin")] // optional
+public struct Gust
+{
+    public float strength = 1;
+
+    public void update(inout ParticleStep s, inout Particle p)
+    {
+        p.velocity.x += strength * s.h;
+        p.position.x += 0.5 * strength * s.h * s.h;
+    }
+};
+```
+
 ### Push-constant layouts
 
 Every struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in `slang.pushPackage`
