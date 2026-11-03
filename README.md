@@ -259,8 +259,12 @@ slang {
   file `<name><Suffix>.slang` (`{name}`, `{struct}` and `{module}` filled in). The plugin itself knows no engine.
 - Structs of other projects are found through `slang-records.index`, shipped in the jar beside the modules, so a
   game's record can nest the engine's. A nested struct whose layout no longer matches its index fails the build.
-- Record structs must be `public` in their Slang module. With `truesim.allocation-free` the records are marked
+- Record and type structs must be `public` in their Slang module (or in any file using visibility modifiers); one
+  that is not fails the build naming its file and struct. With `truesim.allocation-free` the records are marked
   `@AllowAllocation`.
+- Fails the build, naming the file, struct and fix: a default that is not a literal, a nested record with a default,
+  a field of a type records do not hold (`bool`, 64-bit scalars, matrices, arrays), two records or types of one name, a
+  type without `typealias Parameters` or whose parameters are no record, and records without `slang.javaPackage`.
 
 ### Particle modules
 

@@ -33,7 +33,10 @@ internal class JavaRecord(
         val declared = record.fields[field.name]?.default
         val nested = field.nested
         if (nested != null) {
-            check(declared == null) { "$name.${field.name}: a nested record takes its own defaults" }
+            check(declared == null) {
+                "$name.${field.name}: a nested record takes its own defaults: remove `= $declared`, and give " +
+                    "${nested.name}'s fields the initializers"
+            }
             val type = simple(javaClass(nested.name))
             return Member(field, Kind.RECORD, type, "$type.DEFAULTS")
         }
@@ -42,11 +45,12 @@ internal class JavaRecord(
             imports += "com.truesim.engine.vulkan.DeviceBuffer"
             return Member(field, Kind.BUFFER, "DeviceBuffer", "null")
         }
-        val numbers = declared?.let { literal(it) }
         val float = field.scalar == "float32"
         check(float || field.scalar == "int32" || field.scalar == "uint32") {
-            "$name.${field.name}: material records hold 32-bit floats and integers, not ${field.scalar}"
+            "$name.${field.name}: material records hold 32-bit floats and integers, not ${field.scalar}: make it a " +
+                "float, int or uint (vectors float2 to float4)"
         }
+        val numbers = declared?.let { literal(field.name, it) }
         if (field.count == 1) {
             val value = numbers?.single() ?: 0.0
             return if (float) Member(field, Kind.F32, "float", floatLiteral(value))
@@ -72,12 +76,13 @@ internal class JavaRecord(
     }
 
     /** The numbers of a Slang literal: `0.7`, `-1`, `float3(0.9, 0.9, 0.95)`, `float3(0)`. */
-    private fun literal(text: String): List<Double> {
+    private fun literal(field: String, text: String): List<Double> {
         val call = Regex("(?:float|int|uint)[234]?\\s*\\((.*)\\)").matchEntire(text.trim())
         val parts = call?.groupValues?.get(1)?.split(',') ?: listOf(text)
         return parts.map {
             it.trim().removeSuffix("f").removeSuffix("u").toDoubleOrNull()
-                ?: throw IllegalStateException("$name: defaults are literals, not `$text`")
+                ?: throw IllegalStateException("$name.$field: defaults are literals (`0.5`, `-1`, `float3(1, 0, 1)`), " +
+                    "not `$text`: write its value")
         }
     }
 
