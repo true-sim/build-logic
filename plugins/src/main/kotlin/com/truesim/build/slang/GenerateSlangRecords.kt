@@ -150,17 +150,22 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             index.writeText("")
             return
         }
-        val pkg = javaPackage.orNull
-            ?: throw IllegalStateException("Slang material records need slang.javaPackage, the generated Java's package")
+        val pkg = javaPackage.orNull ?: throw IllegalStateException((declared.records.firstOrNull()
+            ?.let { "${it.file}: the material record ${it.name}" }
+            ?: declared.types.first().let { "${it.file}: the material type ${it.struct}" }) +
+            " needs slang.javaPackage, the generated Java's package: set it in the slang { } block")
         val library = readIndexes()
-        val reflected = reflect(root, declared)
         val local = declared.records.associate { it.name to "$pkg.${it.name}" }
         fun javaClass(struct: String): String = local[struct] ?: library[struct]?.javaClass
-            ?: throw IllegalStateException("$struct is no material record of these sources or their libraries")
+            ?: throw IllegalStateException("$struct is no material record of these sources or their libraries: mark " +
+                "it [MaterialParameters(features)] or [MaterialFeature(feature)]")
+        declared.types.forEach { type -> explained(type.file) { javaClass(type.parameters) } } // before the probe
+        val reflected = reflect(root, declared)
         for ((name, struct) in reflected) {
             library[name]?.let { entry ->
                 check(local.containsKey(name) || entry.signature == struct.signature()) {
-                    "$name's layout changed since its library was built: rebuild ${entry.javaClass}'s project"
+                    "$name's layout changed since its library was built (its slang-records.index): rebuild " +
+                        "${entry.javaClass}'s project, or depend on the version matching its Slang modules"
                 }
             }
         }
@@ -172,7 +177,9 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                     declared.records.firstOrNull { it.name == nested.name }?.kind ?: library[nested.name]?.kind
                 } ?: "")
             }
-            val java = JavaRecord(pkg, record, struct, ::javaClass, kinds, allowAllocation.get()).source()
+            val java = explained(record.file) {
+                JavaRecord(pkg, record, struct, ::javaClass, kinds, allowAllocation.get()).source()
+            }
             File(javaOut, pkg.replace('.', '/') + "/${record.name}.java").apply { parentFile.mkdirs() }.writeText(java)
             records += listOf(record.name, "$pkg.${record.name}", record.kind, struct.bytes().toString(),
                 struct.signature()).joinToString(" ")
@@ -180,20 +187,29 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         val templates = if (declared.types.isEmpty()) null else materialTemplates(root)
         for (type in declared.types) {
             writeEntryPoints(slangOut, type, templates!!)
-            File(javaOut, pkg.replace('.', '/') + "/${type.struct}.java").apply { parentFile.mkdirs() }
-                .writeText(typeSource(pkg, type, templates!!, javaClass(type.parameters), reflected[type.parameters]
-                    ?: throw IllegalStateException("${type.struct}'s parameters ${type.parameters} are no record")))
+            val source = explained(type.file) {
+                typeSource(pkg, type, templates, javaClass(type.parameters), reflected[type.parameters]
+                    ?: throw IllegalStateException("${type.struct}'s parameters ${type.parameters} are no record"))
+            }
+            File(javaOut, pkg.replace('.', '/') + "/${type.struct}.java").apply { parentFile.mkdirs() }.writeText(source)
         }
         index.writeText(records.joinToString("\n", postfix = "\n"))
     }
 
     // ------------------------------------------------------------------------------------------------ the sources
 
-    class Record(val name: String, val module: String, val kind: String, val fields: Map<String, Declaration>)
+    /** A material record: struct [name] of [module], declared in [file]. */
+    class Record(
+        val name: String, val module: String, val kind: String, val fields: Map<String, Declaration>,
+        val file: File,
+    )
 
     class Declaration(val type: String, val name: String, val default: String?)
 
-    class MaterialTypeDecl(val name: String, val struct: String, val module: String, val parameters: String)
+    class MaterialTypeDecl(
+        val name: String, val struct: String, val module: String, val parameters: String,
+        val file: File,
+    )
 
     class PushBlock(val struct: String, val module: String)
 
@@ -210,16 +226,21 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         for (file in root.walkTopDown().filter { it.isFile && it.extension == "slang" }.sortedBy { it.path }) {
             val text = withoutComments(file.readText())
             val module = file.relativeTo(root).invariantSeparatorsPath.removeSuffix(".slang").replace('/', '.')
+            val hidden = internalByDefault(text)
             for (match in RECORD.findAll(text)) {
                 val kind = if (match.groupValues[1] == "MaterialParameters") "parameters" else "feature"
-                val name = match.groupValues[2]
-                records += Record(name, module, kind, declarations(name, body(text, match.range.last)))
+                val name = match.groupValues[3]
+                checkPublic(file, module, match.groupValues[1], name, hidden && match.groupValues[2].isEmpty())
+                val fields = explained(file) { declarations(name, body(text, match.range.last)) }
+                records += Record(name, module, kind, fields, file)
             }
             for (match in TYPE.findAll(text)) {
+                val struct = match.groupValues[3]
+                checkPublic(file, module, "MaterialType", struct, hidden && match.groupValues[2].isEmpty())
                 val body = body(text, match.range.last)
-                val parameters = PARAMETERS.find(body)?.groupValues?.get(1)
-                    ?: throw IllegalStateException("${match.groupValues[2]} needs `typealias Parameters = ...;`")
-                types += MaterialTypeDecl(match.groupValues[1], match.groupValues[2], module, parameters)
+                val parameters = PARAMETERS.find(body)?.groupValues?.get(1) ?: throw IllegalStateException(
+                    "$file: $struct needs `public typealias Parameters = <its [MaterialParameters] struct>;`")
+                types += MaterialTypeDecl(match.groupValues[1], struct, module, parameters, file)
             }
             for (match in PUSH.findAll(text)) {
                 pushes += PushBlock(match.groupValues[1], module)
@@ -234,18 +255,37 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 "Push-constant structs called $struct in $modules: rename all but one, as each becomes a Java class"
             }
         }
-        val names = records.map { it.name } + types.map { it.struct }
-        names.groupBy { it }.filter { it.value.size > 1 }.keys.firstOrNull()?.let {
-            throw IllegalStateException("Two material records or types are called $it")
+        val names = records.map { it.name to it.file } + types.map { it.struct to it.file }
+        val clashes = names.groupBy({ it.first }, { it.second }).filter { it.value.size > 1 }
+        clashes.entries.firstOrNull()?.let { (name, files) ->
+            throw IllegalStateException("Two material records or types are called $name (in " +
+                "${files.distinct().joinToString(" and ")}): rename all but one, as each becomes the Java class $name")
         }
         return Declared(records, types, pushes.distinctBy { it.struct }, hosts)
     }
 
-    /** The struct body after the `{` that ends at `from`, to its `}`: material records are flat. */
+    /**
+     * Fails where a record or type struct ([marker] the attribute marking it) is not public although its file hides
+     * what is not ([hidden]): the probe of the records, outside the module, could not reach it, and slangc would fail
+     * with "no overload for '!=' ... Ptr<error, ...>" instead of saying why.
+     */
+    private fun checkPublic(file: File, module: String, marker: String, struct: String, hidden: Boolean) {
+        check(!hidden) {
+            "$file: the [$marker] struct $struct is not public, so the build cannot read it from outside module " +
+                "$module: declare it `public struct $struct`, with public fields"
+        }
+    }
+
+    /** The struct body after the `{` at `from`, to its `}` (past braces of initializers such as `= { 2 }`). */
     private fun body(text: String, from: Int): String {
-        val end = text.indexOf('}', from)
-        check(end > from) { "No end of the struct at ${text.substring(from, minOf(text.length, from + 40))}" }
-        return text.substring(from + 1, end)
+        var depth = 0
+        for (i in from until text.length) {
+            when (text[i]) {
+                '{' -> depth++
+                '}' -> if (--depth == 0) return text.substring(from + 1, i)
+            }
+        }
+        throw IllegalStateException("No end of the struct at ${text.substring(from, minOf(text.length, from + 40))}")
     }
 
     private fun declarations(struct: String, body: String): Map<String, Declaration> {
@@ -303,6 +343,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 append(";\n}\n")
             })
             val reflection = compileProbe(slangc, root, probe, "the material records")
+            val files = declared.records.associate { it.name to it.file }
             val found = mutableMapOf<String, Struct>()
             @Suppress("UNCHECKED_CAST")
             for (parameter in reflection["parameters"] as List<Map<String, Any?>>) {
@@ -311,7 +352,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 }
                 val element = (parameter["type"] as Map<String, Any?>)["elementType"] as Map<String, Any?>
                 for (field in element["fields"] as List<Map<String, Any?>>) {
-                    val struct = struct((field["type"] as Map<String, Any?>)["valueType"] as Map<String, Any?>)
+                    val struct = struct((field["type"] as Map<String, Any?>)["valueType"] as Map<String, Any?>, files)
                     collect(struct, found)
                 }
             }
@@ -540,7 +581,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun struct(type: Map<String, Any?>): Struct = Struct(
+    private fun struct(type: Map<String, Any?>, files: Map<String, File>): Struct = Struct(
         type["name"] as String,
         attributes(type["userAttribs"]),
         (type["fields"] as List<Map<String, Any?>>).map { field ->
@@ -554,13 +595,14 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 "vector" -> Field(field["name"] as String, offset, size,
                     (t["elementType"] as Map<String, Any?>)["scalarType"] as String,
                     (t["elementCount"] as Number).toInt(), null, attributes(field["userAttribs"]))
-                "struct" -> Field(field["name"] as String, offset, size, null, 1, struct(t),
+                "struct" -> Field(field["name"] as String, offset, size, null, 1, struct(t, files),
                     attributes(field["userAttribs"]))
                 // A buffer's address (T*): the Java record takes the buffer.
                 "pointer" -> Field(field["name"] as String, offset, size, POINTER, 1, null,
                     attributes(field["userAttribs"]))
-                else -> throw IllegalStateException(
-                    "${type["name"]}.${field["name"]}: material records hold scalars, vectors, pointers and records")
+                else -> throw IllegalStateException((files[type["name"]]?.let { "$it: " } ?: "") +
+                    "${type["name"]}.${field["name"]} is a ${t["kind"]}: material records hold scalars, vectors, " +
+                    "buffer pointers (T*) and records")
             }
         },
     )
@@ -716,6 +758,22 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     }
 
     companion object {
+        /** [action]'s result; a failure of it names [file], the Slang source it came from. */
+        internal fun <T> explained(file: File, action: () -> T): T = try {
+            action()
+        } catch (e: IllegalStateException) {
+            val message = e.message ?: throw e
+            if (message.startsWith(file.path)) throw e else throw IllegalStateException("$file: $message", e)
+        }
+
+        /**
+         * Whether the declarations of a Slang file ([text], without comments) are internal unless marked public: those
+         * of a `module` (or of a file `implementing` one), and of any file using a visibility modifier. Only a file
+         * using none (Slang's legacy mode) makes every declaration public.
+         */
+        internal fun internalByDefault(text: String) =
+            MODULE_DECLARATION.containsMatchIn(text) || VISIBILITY.containsMatchIn(text)
+
         /** {@code text} without its comments. */
         internal fun withoutComments(text: String) =
             text.replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ").replace(Regex("//[^\n]*"), " ")
@@ -739,10 +797,12 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             "true", "false", "null", "var", "record", "yield")
         private val ATTRIBUTE = Regex("\\[[^\\]]*]")
         private val RECORD = Regex(
-            "\\[(MaterialParameters|MaterialFeature)(?:\\([^)]*\\))?]\\s*(?:\\[[^\\]]*]\\s*)*(?:public\\s+)?" +
+            "\\[(MaterialParameters|MaterialFeature)(?:\\([^)]*\\))?]\\s*(?:\\[[^\\]]*]\\s*)*(public\\s+)?" +
                 "struct\\s+(\\w+)[^{;]*\\{")
         private val TYPE = Regex(
-            "\\[MaterialType\\(\"(\\w+)\"\\)]\\s*(?:\\[[^\\]]*]\\s*)*(?:public\\s+)?struct\\s+(\\w+)[^{;]*\\{")
+            "\\[MaterialType\\(\"(\\w+)\"\\)]\\s*(?:\\[[^\\]]*]\\s*)*(public\\s+)?struct\\s+(\\w+)[^{;]*\\{")
+        private val MODULE_DECLARATION = Regex("^\\s*(?:module|implementing)\\s+[\\w.\"]+", RegexOption.MULTILINE)
+        private val VISIBILITY = Regex("\\b(?:public|internal|private)\\b")
         private val HOST = Regex("\\[HostLayout]\\s*(?:\\[[^\\]]*]\\s*)*(?:public\\s+)?struct\\s+(\\w+)")
         private val PUSH =
             Regex("\\[\\[vk::push_constant]]\\s*(?:(?:public|internal|uniform)\\s+)*ConstantBuffer<(\\w+)>")

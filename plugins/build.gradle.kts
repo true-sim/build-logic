@@ -21,6 +21,19 @@ dependencies {
     implementation(libs.foojay.resolver)
     implementation(libs.asm.tree)
     implementation(libs.asm.analysis) // the purity check follows values to where they came from
+
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.assertj.core)
+    testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+// The plugins' tests: Gradle TestKit builds of small projects (their own builds under build/testkit-projects), using
+// the Slang compiler this machine's builds installed in the Gradle user home, so it downloads once.
+tasks.test {
+    useJUnitPlatform()
+    systemProperty("truesim.slang.cache", gradle.gradleUserHomeDir.resolve("truesim").path)
+    systemProperty("truesim.testkit.projects", layout.buildDirectory.dir("testkit-projects").get().asFile.path)
 }
 
 // Ship the shared catalog and lombok.config inside the plugin jar so `truesim.settings` can install them,
