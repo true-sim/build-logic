@@ -1,7 +1,9 @@
 name: Set up Vulkan
 description: >
   Vulkan for headless Linux runners: Mesa's lavapipe (a CPU Vulkan device), the Khronos validation layer and, if the
-  image lacks it, the loader, unpacked from cached packages so the versions stay fixed between runs. Checks that a
+  image lacks it, the loader, unpacked from cached packages so the versions stay fixed between runs. Mesa is the
+  version given (`mesa`: the exact kisak-mesa PPA build, fetched from Launchpad), not the image's: lavapipe 26.0.8,
+  Ubuntu 26.04's, crashed in its own code on AMD EPYC 9V45 and 9V74 runners (true-sim/engine#436). Checks that a
   Vulkan 1.3 device and the validation layer are there, writes their versions to the job summary, and sets
   SDL_VIDEO_DRIVER=offscreen and TRUESIM_REQUIRE_VALIDATION=true for later steps.
 
@@ -11,6 +13,11 @@ inputs:
       Part of the package cache key. Bump it to pick up newer packages; while it stays, every run installs the same
       ones (until the cache expires after 7 days without use).
     default: "1"
+  mesa:
+    description: >
+      The Mesa version lavapipe comes from: a kisak-mesa PPA version without its series suffix (e.g. 26.2.6~kisak1,
+      published for Ubuntu 26.04 as 26.2.6~kisak1~r), or empty for the image's own Mesa.
+    default: "26.2.6~kisak1"
   min-api-version:
     description: The lowest Vulkan version the device must offer, as major.minor.
     default: "1.3"
@@ -41,18 +48,35 @@ runs:
       uses: actions/cache@v6
       with:
         path: ~/.cache/truesim-vulkan-debs
-        key: truesim-vulkan-${{ steps.os.outputs.release }}-${{ inputs.cache-version }}
+        key: truesim-vulkan-${{ steps.os.outputs.release }}-mesa-${{ inputs.mesa || 'image' }}-${{ inputs.cache-version }}
 
     - name: Download Vulkan packages
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
+      env:
+        MESA: ${{ inputs.mesa }}
       run: |
+        if [ -n "$MESA" ]; then
+          # The exact build from Launchpad (kept there after the PPA moves on), and the PPA as a source for anything
+          # newer it needs (libdrm, LLVM): Mesa's own packages are the files fetched, never a newer version.
+          . /etc/os-release
+          rm -rf /tmp/truesim-mesa
+          mkdir -p /tmp/truesim-mesa
+          python3 "$GITHUB_ACTION_PATH/kisak_mesa.py" "$MESA" "$VERSION_CODENAME" /tmp/truesim-mesa
+          sudo add-apt-repository -y -n ppa:kisak/kisak-mesa
+          mesa=(/tmp/truesim-mesa/*.deb)
+        else
+          mesa=(mesa-vulkan-drivers)
+        fi
         sudo apt-get update
         sudo apt-get clean
         sudo apt-get install -y --download-only --no-install-recommends \
-          libvulkan1 mesa-vulkan-drivers vulkan-validationlayers vulkan-tools
+          libvulkan1 vulkan-validationlayers vulkan-tools "${mesa[@]}"
         mkdir -p ~/.cache/truesim-vulkan-debs
         cp /var/cache/apt/archives/*.deb ~/.cache/truesim-vulkan-debs/
+        if [ -n "$MESA" ]; then
+          cp /tmp/truesim-mesa/*.deb ~/.cache/truesim-vulkan-debs/
+        fi
         ls ~/.cache/truesim-vulkan-debs
 
     - name: Install Vulkan packages
@@ -107,7 +131,7 @@ runs:
           echo "| | |"
           echo "|---|---|"
           echo "| Device | lavapipe, Vulkan $api |"
-          echo "| Driver | $driver |"
+          echo "| Driver | $driver (Mesa ${{ inputs.mesa || 'of the image' }}) |"
           echo "| Validation layer | $layer |"
           echo "| Packages | ${{ steps.cache.outputs.cache-hit == 'true' && 'cached' || 'downloaded' }} |"
         } >> "$GITHUB_STEP_SUMMARY"
