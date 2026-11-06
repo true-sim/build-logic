@@ -16,6 +16,16 @@ subprojects {
                     }
                 }
             }
+            publications.withType<MavenPublication>().configureEach {
+                pom {
+                    licenses {
+                        license {
+                            name = "MIT License"
+                            url = "https://opensource.org/licenses/MIT"
+                        }
+                    }
+                }
+            }
         }
     }
 }
