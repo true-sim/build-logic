@@ -373,3 +373,7 @@ when unused for 7 days.
 ## Releasing
 
 Push a tag `vX.Y.Z`; the Publish workflow publishes version `X.Y.Z` to GitHub Packages.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).

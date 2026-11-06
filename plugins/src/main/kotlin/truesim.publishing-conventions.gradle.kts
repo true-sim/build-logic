@@ -1,5 +1,6 @@
 // Publishes the project's Java component to the repo's GitHub Packages registry.
 // Credentials: GITHUB_ACTOR/GITHUB_TOKEN env vars in CI, gpr.user/gpr.key Gradle properties locally.
+// Every publication's POM declares the MIT licence all true-sim repos are under.
 plugins {
     `maven-publish`
 }
@@ -16,6 +17,16 @@ publishing {
                     .orElse(providers.gradleProperty("gpr.user")).orNull
                 password = providers.environmentVariable("GITHUB_TOKEN")
                     .orElse(providers.gradleProperty("gpr.key")).orNull
+            }
+        }
+    }
+    publications.withType<MavenPublication>().configureEach {
+        pom {
+            licenses {
+                license {
+                    name = "MIT License"
+                    url = "https://opensource.org/licenses/MIT"
+                }
             }
         }
     }
