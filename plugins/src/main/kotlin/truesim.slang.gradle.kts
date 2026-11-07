@@ -18,6 +18,12 @@
 // Particle modules (`[ParticleModule("name")]` structs, engine-render's particles) of a project and its libraries are
 // collected into one interpreting kernel: their opcodes and dispatch, generated from the templates engine-render ships,
 // and a Java class listing them, slang.particleModules (the test sources' the same name prefixed with Test).
+//
+// Shading hooks (`[ShadingHook("name")]` structs: indirect light, media along the view ray, ...) of a project and its
+// libraries are merged into one dispatch, generated from the templates engine-render ships and included by its
+// shading. With slang.shadingHooks (a Java class; the test sources' prefixed with Test) the project also gets that
+// listing and variants of its libraries' shaders that shade, rebuilt with every hook; slang.shadingShaders names the
+// project's own shaders that shade, for projects using it to rebuild.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -64,6 +70,20 @@ interface SlangExtension {
      * same name with its simple name prefixed with `Test`.
      */
     val particleModules: Property<String>
+
+    /**
+     * The Java class listing the shading hooks of the project and its libraries, e.g. `com.example.game.GameHooks`;
+     * needed once the project's shaders declare any. With it, the libraries' shaders that shade are rebuilt with every
+     * hook the project sees, as variants the listing names. The test sources' listing is the same name with its
+     * simple name prefixed with `Test`.
+     */
+    val shadingHooks: Property<String>
+
+    /**
+     * The project's shaders that shade (paths under src/main/slang without `.slang`, e.g. `ao/ao`), beyond material
+     * types' entry points: projects with a listing of hooks rebuild them with theirs.
+     */
+    val shadingShaders: ListProperty<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -74,6 +94,7 @@ val slang = extensions.create<SlangExtension>("slang").apply {
     })
     arguments.convention(emptyList())
     constantModules.convention(emptyList())
+    shadingShaders.convention(emptyList())
 }
 
 fun registerLibraries(name: String, classpath: String) = tasks.register<CollectSlangLibraries>(name) {
@@ -98,6 +119,7 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     pushPackage = slang.pushPackage
     pushBase = slang.pushBase
     constantModules.convention(emptyList())
+    shadingShaders.convention(emptyList())
     allowAllocation = false
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
     slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")
@@ -109,17 +131,23 @@ val mainRecords = registerRecords("generateSlangRecords", "main", mainLibraries)
 mainRecords.configure {
     constantModules = slang.constantModules // modules of the main sources
     particleModules = slang.particleModules
+    shadingHooks = slang.shadingHooks
+    shadingShaders = slang.shadingShaders
 }
 pluginManager.withPlugin("truesim.allocation-free") {
     tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
 }
+/** The test sources' listing of [name]: its simple name prefixed with `Test`. */
+fun testName(name: String): String {
+    val pkg = name.substringBeforeLast('.', "")
+    return (if (pkg.isEmpty()) "" else "$pkg.") + "Test" + name.substringAfterLast('.')
+}
+
 val testRecords = registerRecords("generateTestSlangRecords", "test", testLibraries)
 testRecords.configure {
     includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
-    particleModules = slang.particleModules.map { name ->
-        val pkg = name.substringBeforeLast('.', "")
-        (if (pkg.isEmpty()) "" else "$pkg.") + "Test" + name.substringAfterLast('.')
-    }
+    particleModules = slang.particleModules.map(::testName)
+    shadingHooks = slang.shadingHooks.map(::testName)
 }
 
 fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>,

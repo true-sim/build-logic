@@ -17,13 +17,16 @@ import org.gradle.api.tasks.TaskAction
 import org.gradle.process.ExecOperations
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
 import javax.inject.Inject
 
 /**
  * Compiles Slang shaders to SPIR-V with the pinned compiler: every `.slang` file under [sources] that declares entry
  * points (`[shader("...")]`) becomes one SPIR-V module with all of them, named by entry point, at the same relative
  * path under [output] with `.spv`. Other `.slang` files are modules the shaders import; [sources] is on the include
- * path. Warnings fail the build.
+ * path. Warnings fail the build. Shaders compile in parallel, a process each.
  *
  * A directory of modules (the sources or an include) may hold a `slangc.arguments` file: arguments its modules need
  * from whoever compiles them, whitespace-separated, e.g. `-warnings-disable 39001` for a deliberate binding overlap.
@@ -83,29 +86,45 @@ abstract class CompileSlang @Inject constructor(private val exec: ExecOperations
                     .map { dir to it }
             }
             .sortedBy { (dir, file) -> file.relativeTo(dir).invariantSeparatorsPath }
-        for ((dir, shader) in shaders) {
-            val relative = shader.relativeTo(dir).invariantSeparatorsPath.removeSuffix(".slang")
-            val target = File(out, "$relative.spv")
-            target.parentFile.mkdirs()
-            val log = ByteArrayOutputStream()
-            val result = exec.exec {
-                commandLine(
-                    listOf(
-                        slangc.absolutePath, shader.absolutePath,
-                        "-target", "spirv", "-profile", "spirv_1_6",
-                        "-fvk-use-entrypoint-name", "-matrix-layout-column-major",
-                        "-warnings-as-errors", "all",
-                        "-O2", "-I", root.absolutePath,
-                        "-o", target.absolutePath,
-                    ) + (includes.files + generated.files).filter { it.isDirectory }
-                        .flatMap { listOf("-I", it.absolutePath) } +
-                        required + arguments.get(),
-                )
-                standardOutput = log
-                errorOutput = log
-                isIgnoreExitValue = true
+        val common = (includes.files + generated.files).filter { it.isDirectory }
+            .flatMap { listOf("-I", it.absolutePath) } + required + arguments.get()
+        // Each shader is a process of its own: as many at once as there are processors, failures reported in order
+        val pool = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors().coerceIn(1, 16))
+        try {
+            val runs = shaders.map { (dir, shader) ->
+                val relative = shader.relativeTo(dir).invariantSeparatorsPath.removeSuffix(".slang")
+                val target = File(out, "$relative.spv")
+                target.parentFile.mkdirs()
+                relative to pool.submit(Callable {
+                    val log = ByteArrayOutputStream()
+                    val result = exec.exec {
+                        commandLine(
+                            listOf(
+                                slangc.absolutePath, shader.absolutePath,
+                                "-target", "spirv", "-profile", "spirv_1_6",
+                                "-fvk-use-entrypoint-name", "-matrix-layout-column-major",
+                                "-warnings-as-errors", "all",
+                                "-O2", "-I", root.absolutePath,
+                                "-o", target.absolutePath,
+                            ) + common,
+                        )
+                        standardOutput = log
+                        errorOutput = log
+                        isIgnoreExitValue = true
+                    }
+                    result.exitValue to log.toString()
+                })
             }
-            check(result.exitValue == 0) { "Slang could not compile $relative.slang:\n$log" }
+            for ((relative, run) in runs) {
+                val (exit, log) = try {
+                    run.get()
+                } catch (e: ExecutionException) {
+                    throw e.cause ?: e
+                }
+                check(exit == 0) { "Slang could not compile $relative.slang:\n$log" }
+            }
+        } finally {
+            pool.shutdownNow()
         }
     }
 
