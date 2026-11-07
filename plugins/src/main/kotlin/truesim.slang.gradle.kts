@@ -23,7 +23,8 @@
 // libraries are merged into one dispatch, generated from the templates engine-render ships and included by its
 // shading. With slang.shadingHooks (a Java class; the test sources' prefixed with Test) the project also gets that
 // listing and variants of its libraries' shaders that shade (found by their dependencies when each library compiled
-// them), rebuilt with every hook.
+// them), rebuilt with every hook. A project whose own shaders declare hooks gets a listing without asking:
+// <javaPackage>.<Project>ShadingHooks; with the templates' `service` the listing is a service (META-INF/services).
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -75,7 +76,9 @@ interface SlangExtension {
      * The Java class listing the shading hooks of the project and its libraries, e.g. `com.example.game.GameHooks`;
      * needed once the project's shaders declare any. With it, the libraries' shaders that shade are rebuilt with every
      * hook the project sees, as variants the listing names. The test sources' listing is the same name with its
-     * simple name prefixed with `Test`.
+     * simple name prefixed with `Test`. Unset, a project whose own shaders declare hooks gets
+     * `<javaPackage>.<Project>ShadingHooks` (the project's name in camel case, e.g. effects-atmosphere:
+     * `EffectsAtmosphereShadingHooks`); one without hooks of its own, none.
      */
     val shadingHooks: Property<String>
 
@@ -117,7 +120,14 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
     slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")
     indexOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/index")
+    resourceOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/resources")
     cacheDir = layout.dir(provider { gradle.gradleUserHomeDir.resolve("truesim") })
+}
+
+/** The listing a project declaring shading hooks gets unasked: `<javaPackage>.<Project>ShadingHooks`. */
+val automaticListing: Provider<String> = slang.javaPackage.map { pkg ->
+    pkg + "." + project.name.split('-', '_', '.').filter { it.isNotEmpty() }
+        .joinToString("") { it.replaceFirstChar(Char::uppercaseChar) } + "ShadingHooks"
 }
 
 val mainRecords = registerRecords("generateSlangRecords", "main", mainLibraries)
@@ -125,6 +135,7 @@ mainRecords.configure {
     constantModules = slang.constantModules // modules of the main sources
     particleModules = slang.particleModules
     shadingHooks = slang.shadingHooks
+    automaticShadingHooks = automaticListing
 }
 pluginManager.withPlugin("truesim.allocation-free") {
     tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
@@ -140,6 +151,7 @@ testRecords.configure {
     includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
     particleModules = slang.particleModules.map(::testName)
     shadingHooks = slang.shadingHooks.map(::testName)
+    automaticShadingHooks = automaticListing.map(::testName)
 }
 
 fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>,
@@ -181,9 +193,11 @@ tasks.named<ProcessResources>("processResources") {
 
 sourceSets.main {
     resources.srcDir(compileSlang.map { it.output.get().asFile.parentFile })
+    resources.srcDir(mainRecords.flatMap { it.resourceOutput })
     java.srcDir(mainRecords.flatMap { it.javaOutput })
 }
 sourceSets.test {
     resources.srcDir(compileTestSlang.map { it.output.get().asFile.parentFile })
+    resources.srcDir(testRecords.flatMap { it.resourceOutput })
     java.srcDir(testRecords.flatMap { it.javaOutput })
 }

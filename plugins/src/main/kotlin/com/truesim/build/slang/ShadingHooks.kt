@@ -67,7 +67,7 @@ internal class ShadingHooks(private val root: File, private val includes: Collec
      */
     fun generate(listing: String?, types: List<Type>,
         records: Map<String, GenerateSlangRecords.Struct>, library: Map<String, GenerateSlangRecords.IndexEntry>,
-        javaPackage: String?, javaOut: File, slangOut: File): List<String> {
+        javaPackage: String?, javaOut: File, slangOut: File, resourceOut: File): List<String> {
         val dir = templates
         if (dir == null) {
             check(declared.isEmpty() && listing == null) {
@@ -121,6 +121,10 @@ internal class ShadingHooks(private val root: File, private val includes: Collec
             }
         } else {
             writeListing(listing, all, property, File(dir, "Hooks.java.template"), javaOut, slangOut)
+            optional(dir, "service")?.let { service ->
+                // The listing as a service: the engine finds it on the classpath (META-INF/services)
+                File(resourceOut, "META-INF/services/$service").apply { parentFile.mkdirs() }.writeText("$listing\n")
+            }
         }
         val own = declared.map { it.name }.toSet()
         return all.filter { it.name in own }.map { it.json() } + types.map { it.json() }
@@ -177,6 +181,10 @@ internal class ShadingHooks(private val root: File, private val includes: Collec
             .filter { it["kind"] == kind }
 
     // ------------------------------------------------------------------------------------------------ the output
+
+    /** The templates' property [key], or null where they have none. */
+    private fun optional(dir: File, key: String): String? =
+        java.util.Properties().apply { File(dir, "hooks.properties").reader().use { load(it) } }.getProperty(key)
 
     private fun constant(hook: Hook, property: (String) -> String): String =
         property("constant").replace("{NAME}", MergedStructs.constant(hook.name))
