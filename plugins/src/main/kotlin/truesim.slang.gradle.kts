@@ -22,8 +22,8 @@
 // Shading hooks (`[ShadingHook("name")]` structs: indirect light, media along the view ray, ...) of a project and its
 // libraries are merged into one dispatch, generated from the templates engine-render ships and included by its
 // shading. With slang.shadingHooks (a Java class; the test sources' prefixed with Test) the project also gets that
-// listing and variants of its libraries' shaders that shade, rebuilt with every hook; slang.shadingShaders names the
-// project's own shaders that shade, for projects using it to rebuild.
+// listing and variants of its libraries' shaders that shade (found by their dependencies when each library compiled
+// them), rebuilt with every hook.
 import com.truesim.build.slang.CollectSlangLibraries
 import com.truesim.build.slang.CompileSlang
 import com.truesim.build.slang.GenerateSlangRecords
@@ -79,11 +79,6 @@ interface SlangExtension {
      */
     val shadingHooks: Property<String>
 
-    /**
-     * The project's shaders that shade (paths under src/main/slang without `.slang`, e.g. `ao/ao`), beyond material
-     * types' entry points: projects with a listing of hooks rebuild them with theirs.
-     */
-    val shadingShaders: ListProperty<String>
 }
 
 val slang = extensions.create<SlangExtension>("slang").apply {
@@ -94,7 +89,6 @@ val slang = extensions.create<SlangExtension>("slang").apply {
     })
     arguments.convention(emptyList())
     constantModules.convention(emptyList())
-    shadingShaders.convention(emptyList())
 }
 
 fun registerLibraries(name: String, classpath: String) = tasks.register<CollectSlangLibraries>(name) {
@@ -119,7 +113,6 @@ fun registerRecords(name: String, sourceSet: String, libraries: TaskProvider<Col
     pushPackage = slang.pushPackage
     pushBase = slang.pushBase
     constantModules.convention(emptyList())
-    shadingShaders.convention(emptyList())
     allowAllocation = false
     javaOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/java")
     slangOutput = layout.buildDirectory.dir("generated/slang-records/$sourceSet/slang")
@@ -132,7 +125,6 @@ mainRecords.configure {
     constantModules = slang.constantModules // modules of the main sources
     particleModules = slang.particleModules
     shadingHooks = slang.shadingHooks
-    shadingShaders = slang.shadingShaders
 }
 pluginManager.withPlugin("truesim.allocation-free") {
     tasks.withType<GenerateSlangRecords>().configureEach { allowAllocation = true }
@@ -163,11 +155,15 @@ fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<Colle
     checksum = slang.checksum
     arguments = slang.arguments
     output = layout.buildDirectory.dir("generated/slang/$sourceSet/shaders")
+    dependencyState = layout.buildDirectory.dir("generated/slang-state/$sourceSet")
     cacheDir = layout.dir(provider { gradle.gradleUserHomeDir.resolve("truesim") })
     onlyIf("there are Slang sources") { sources.get().asFile.isDirectory }
 }
 
 val compileSlang = registerSlang("compileSlang", "main", mainLibraries, mainRecords)
+compileSlang.configure {
+    shadingIndex = layout.buildDirectory.dir("generated/slang-shading/main") // shaders that shade, for later projects
+}
 val compileTestSlang = registerSlang("compileTestSlang", "test", testLibraries, testRecords)
 
 // The sources go into the jar as well, under slang/, for projects depending on this one to import.
@@ -176,6 +172,9 @@ tasks.named<ProcessResources>("processResources") {
         into("slang")
     }
     from(mainRecords.flatMap { it.indexOutput }) {
+        into("slang")
+    }
+    from(compileSlang.flatMap { it.shadingIndex }) {
         into("slang")
     }
 }

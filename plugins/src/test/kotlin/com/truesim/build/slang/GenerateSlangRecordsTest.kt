@@ -191,7 +191,8 @@ class GenerateSlangRecordsTest {
         """)
 
         assertThat(project.fail("generateSlangRecords").output).contains("${slang(project, "flags.slang")}: " +
-            "Flags.on: material records hold 32-bit floats and integers, not bool: make it a float, int or uint")
+            "Flags.on: records hold 32-bit floats and integers, uint64_t addresses and buffers (T*), not bool: make " +
+            "it a float, int or uint")
     }
 
     @Test
@@ -235,7 +236,7 @@ class GenerateSlangRecordsTest {
         val project = SlangProject("noPackage").project(configuration = "").attributes().slang("glow.slang", glow)
 
         assertThat(project.fail("generateSlangRecords").output).contains("${slang(project, "glow.slang")}: the " +
-            "material record GlowParameters needs slang.javaPackage, the generated Java's package: set it in the " +
+            "record GlowParameters needs slang.javaPackage, the generated Java's package: set it in the " +
             "slang { } block")
     }
 

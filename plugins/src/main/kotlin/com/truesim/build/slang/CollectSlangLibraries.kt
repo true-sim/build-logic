@@ -18,8 +18,8 @@ import java.util.zip.ZipFile
  * read as their `slang/` subdirectory, jars by their `slang/` entries. Two libraries shipping different files at one
  * path fail the build (identical copies, one library reached twice, are fine); the libraries' `slangc.arguments`
  * (what their modules need from the compiler), `slang-records.index` (their material records' Java classes),
- * `particle-modules.index` (their particle modules) and `shading-hooks.index` (their shading hooks, shaders that
- * shade and material types) add up.
+ * `particle-modules.index` (their particle modules), `shading-hooks.index` (their shading hooks and material types)
+ * and `shading-shaders.index` (their shaders that shade) add up.
  */
 @CacheableTask
 abstract class CollectSlangLibraries : DefaultTask() {
@@ -91,6 +91,7 @@ abstract class CollectSlangLibraries : DefaultTask() {
 
     private companion object {
         /** Files of every library adding up, not the first one's. */
-        val MERGED = setOf(CompileSlang.ARGUMENTS, GenerateSlangRecords.INDEX, ParticleModules.INDEX, ShadingHooks.INDEX)
+        val MERGED = setOf(CompileSlang.ARGUMENTS, GenerateSlangRecords.INDEX, ParticleModules.INDEX, ShadingHooks.INDEX,
+            CompileSlang.SHADING_INDEX)
     }
 }
