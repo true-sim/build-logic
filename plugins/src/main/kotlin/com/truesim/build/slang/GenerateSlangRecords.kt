@@ -117,6 +117,15 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Optional
     abstract val shadingHooks: Property<String>
 
+    /**
+     * The listing's name where the sources declare shading hooks and [shadingHooks] names none: generated without
+     * being asked for (the plugin's convention: `<javaPackage>.<Project>ShadingHooks`). Sources without hooks of their
+     * own get no listing from it, nor variants.
+     */
+    @get:Input
+    @get:Optional
+    abstract val automaticShadingHooks: Property<String>
+
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -130,6 +139,10 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:OutputDirectory
     abstract val indexOutput: DirectoryProperty
 
+    /** Resources generated beside the classes: the shading hooks' listing as a service (META-INF/services). */
+    @get:OutputDirectory
+    abstract val resourceOutput: DirectoryProperty
+
     @get:Internal
     abstract val cacheDir: DirectoryProperty
 
@@ -138,6 +151,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         val javaOut = javaOutput.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
         val slangOut = slangOutput.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
         val indexOut = indexOutput.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
+        val resourceOut = resourceOutput.get().asFile.also { it.deleteRecursively(); it.mkdirs() }
         val index = File(indexOut, INDEX)
         val root = sources.get().asFile
         val declared = if (root.isDirectory) scan(root) else Declared(emptyList(), emptyList(), emptyList(), emptyList())
@@ -151,10 +165,13 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
         // The records first (material and shading hook parameters: the hooks' dispatch loads theirs field by field),
         // then the shading hooks' dispatch (modules with push constants include it through the shading), then layouts
         val reflected = records(root, declared, javaOut, slangOut, index)
-        File(indexOut, ShadingHooks.INDEX).writeText(ShadingHooks(root, includes.files)
-            .generate(shadingHooks.orNull, declared.types.map {
+        val hooks = ShadingHooks(root, includes.files)
+        val listing = shadingHooks.orNull ?: if (hooks.any()) automaticShadingHooks.orNull else null
+        File(indexOut, ShadingHooks.INDEX).writeText(hooks
+            .generate(listing, declared.types.map {
                 ShadingHooks.Type(it.name, it.struct, it.module)
-            }, reflected, readIndexes(), javaPackage.orNull, javaOut, slangOut).joinToString("") { "$it\n" })
+            }, reflected, readIndexes(), javaPackage.orNull, javaOut, slangOut, resourceOut)
+            .joinToString("") { "$it\n" })
         val layoutPackage = pushPackage.orNull ?: javaPackage.orNull
         layoutPackage?.let { pkg ->
             writeLayouts(root, declared.pushes, pkg, javaOut, false)

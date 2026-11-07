@@ -32,6 +32,8 @@ class ShadingHooksTest {
             .contains("com.example.hooks.RedHookParameters.class").contains("FIRST = 1024;")
         assertThat(project.java("RedHookParameters", "com.example.hooks"))
             .contains("public record RedHookParameters(Vec3 color, float strength) implements ShadingHookParameters {")
+        assertThat(project.output("generated/slang-records/main/resources/META-INF/services/com.example.HookListing")
+            .readText()).isEqualTo("com.example.Hooks\n")
         val index = project.output("generated/slang-records/main/index/shading-hooks.index").readText()
         assertThat(index).contains("\"kind\":\"hook\"").contains("\"name\":\"game.red\"").contains("\"index\":0")
             .contains("\"points\":[\"tint\"]").contains("\"parameters\":\"RedHookParameters\"")
@@ -207,13 +209,23 @@ class ShadingHooksTest {
     }
 
     @Test
-    fun `hooks without a listing fail naming the setting`() {
-        val project = SlangProject("noListing").project(configuration = "slang { javaPackage = 'com.example.hooks' }")
-        engine(project, "")
-        project.slang("game/red.slang", hook("game.red", "RedHook"))
+    fun `a project declaring hooks gets a listing without asking, as a service, and one without hooks none`() {
+        val project = SlangProject("unasked")
+            .project(":plain-lib", "slang { javaPackage = 'com.example.plain' }")
+            .project(":game-hooks", "slang { javaPackage = 'com.example.game' }\n\n" +
+                "dependencies {\n    implementation project(':plain-lib')\n}")
+        engine(project, ":plain-lib")
+        project.slang("game/red.slang", hook("game.red", "RedHook"), ":game-hooks")
 
-        assertThat(project.fail("generateSlangRecords").output)
-            .contains("Shading hooks (RedHook) need slang.shadingHooks, the generated Java class listing them")
+        project.build(":game-hooks:compileSlang")
+
+        assertThat(project.java("GameHooksShadingHooks", "com.example.game", ":game-hooks"))
+            .contains("NAMES = { \"game.red\" };")
+        assertThat(project.output("generated/slang-records/main/resources/META-INF/services/com.example.HookListing",
+            ":game-hooks").readText()).isEqualTo("com.example.game.GameHooksShadingHooks\n")
+        assertThat(project.output("generated/slang-records/main/java", ":plain-lib").walk()
+            .none { it.name.endsWith("ShadingHooks.java") }).`as`("no hooks of its own: no listing").isTrue()
+        assertThat(project.output("generated/slang-records/main/resources/META-INF", ":plain-lib")).doesNotExist()
     }
 
     @Test
@@ -266,6 +278,7 @@ class ShadingHooksTest {
             switch.first=1024
             switch.declaration=[vk::constant_id({id})] public const bool {name} = false;\n
             typeEntries=
+            service=com.example.HookListing
         """, path)
         project.slang("shading-hooks/dispatch.slang.template", """
             {imports}

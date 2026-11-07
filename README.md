@@ -332,6 +332,11 @@ slang {
 }
 ```
 
+A project whose own shaders declare hooks gets its listing without asking: `<javaPackage>.<Project>ShadingHooks`
+(effects-atmosphere: `EffectsAtmosphereShadingHooks`); a project without hooks of its own gets none, and no variants.
+With the templates' `service` (an interface's name) the listing is also written as that service
+(`META-INF/services/<service>`), so the engine finds the listings on the classpath.
+
 ```slang
 [ShadingHookParameters]
 public struct FogParameters
@@ -371,7 +376,8 @@ public struct Fog : IMediaHook                   // a hook point's interface: th
   (`{imports}`, `{constants}`, `{count}`, `{switches}`, `{any}`: whether the pipeline runs any hook,
   `{calls:<point>}`) written to `shading-hooks/dispatch.slang` on the include path of every project seeing the
   templates, and `Hooks.java.template` (`{package}`, `{class}`, `{names}`, `{parameters}`: the records' classes,
-  `{bytes}`, `{firstSwitch}`, `{replaced}`). The plugin itself knows no engine.
+  `{bytes}`, `{firstSwitch}`, `{replaced}`), with the optional `service` of the properties. The plugin itself knows
+  no engine.
 - **Libraries' shaders rebuilt.** A library's shaders are compiled in its own build, with the hooks it knows. Its
   shaders that shade are found as they compile: those whose dependencies (slangc's depfile) include the dispatch,
   listed in its `shading-shaders.index` beside its modules. A project with `slang.shadingHooks` rebuilds those of its
@@ -381,7 +387,7 @@ public struct Fog : IMediaHook                   // a hook point's interface: th
   shaders and types compile with the full dispatch anyway.
 - Fails the build: two hooks of one name (or struct name), a hook conforming to no hook point's interface, a hook
   without parameters or with parameters that are no `[ShadingHookParameters]` record of the sources, hooks ordered in
-  a cycle, and hooks without `slang.shadingHooks`.
+  a cycle, and hooks without `slang.shadingHooks` or `slang.javaPackage` (the listing's package).
 
 See engine-render's README ("Writing a shading hook") for the hook points and the Java side.
 
