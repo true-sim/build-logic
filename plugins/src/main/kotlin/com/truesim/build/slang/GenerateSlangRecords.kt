@@ -39,6 +39,8 @@ import javax.inject.Inject
  *
  * - the `[ParticleModule("name")]` structs of the sources and their libraries are collected into one interpreting
  *   kernel's dispatch and the Java class [particleModules] listing them ([ParticleModules]);
+ * - the `[ShadingHook("name")]` structs of the sources and their libraries are merged into one dispatch, and with
+ *   [shadingHooks] a Java class listing them and variants of the libraries' shaders that shade ([ShadingHooks]);
  *
  * - a struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in [pushPackage] (or
  *   [javaPackage]): the bytes the block takes and each field's byte offset (nested structs' fields by path), from
@@ -105,6 +107,22 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Optional
     abstract val particleModules: Property<String>
 
+    /**
+     * The Java class listing the shading hooks (`[ShadingHook]` structs) of the sources and their libraries, e.g.
+     * `com.example.game.GameHooks`; needed once the sources declare any. With it, the libraries' shaders that shade are
+     * rebuilt with every hook, as variants the listing names.
+     */
+    @get:Input
+    @get:Optional
+    abstract val shadingHooks: Property<String>
+
+    /**
+     * The shaders of the sources that shade (paths without `.slang`, e.g. `ao/ao`): projects using this one as a
+     * library rebuild them with their hooks. Material types' entry points need not be named.
+     */
+    @get:Input
+    abstract val shadingShaders: ListProperty<String>
+
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -136,6 +154,11 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 "Particle modules need slang.particleModules, the generated Java class listing them")
             modules.generate(listing, javaOut, slangOut).joinToString("\n", postfix = "\n")
         })
+        // The shading hooks' dispatch too: the shading modules include it
+        File(indexOut, ShadingHooks.INDEX).writeText(ShadingHooks(root, includes.files)
+            .generate(shadingHooks.orNull, shadingShaders.get(), declared.types.map {
+                ShadingHooks.Type(it.name, it.struct, it.module)
+            }, javaOut, slangOut).joinToString("") { "$it\n" })
         val layoutPackage = pushPackage.orNull ?: javaPackage.orNull
         layoutPackage?.let { pkg ->
             writeLayouts(root, declared.pushes, pkg, javaOut, false)
