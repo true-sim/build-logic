@@ -227,7 +227,8 @@ plugins {
   with all of them, named as in the source, at classpath `shaders/<same path>.spv`; other `.slang` files are modules
   the shaders import. `src/test/slang` goes to the test resources the same way and can import the main modules.
 - Target SPIR-V 1.6 (Vulkan 1.3), column-major matrices, `-O2`, warnings as errors. Extra arguments:
-  `slang { arguments.add("-DQUALITY=2") }`. Shaders compile in parallel, a compiler process each.
+  `slang { arguments.add("-DQUALITY=2") }`. Shaders compile in parallel, a compiler process each, and only those
+  whose dependencies (as slangc lists them) or arguments changed since they last compiled.
 - The compiler is Slang's own release for the build machine's platform (Windows, Linux, macOS; x86_64 and
   aarch64), downloaded once into the Gradle user home and checked against a SHA-256 pinned here: builds and CI use
   exactly the pinned compiler, and a tampered download fails the build. The task is cacheable.
@@ -318,36 +319,69 @@ public struct Gust
 
 ### Shading hooks
 
-Engine-render's shading (forward, visibility buffer, blended, and any library's shading, such as particles) calls the
-shading hooks of a generated dispatch at its hook points: the light from all around a point, the media along the view
-ray. Each hook is a Slang struct marked `[ShadingHook("name")]` with a function per hook point it has; the build merges
-the hooks of the project and its libraries into the dispatch (a collecting mode, as particle modules), each under a
-bit of a specialization constant, so a hook a view does not use is compiled out of its pipelines.
+Engine-render's shading (forward, visibility buffer, blended, ray hits, and any library's shading, such as particles)
+calls the shading hooks of a generated dispatch at its hook points (the templates name them: a surface before
+lighting, the light from all around, the media along the view ray, ...). Each hook is a Slang struct marked
+`[ShadingHook("name")]`; the build merges the hooks of the project and its libraries into the dispatch (a collecting
+mode, as particle modules), each under a specialization constant of its own, so a hook a pipeline does not run is
+compiled out of it.
 
 ```kotlin
 slang {
     shadingHooks = "com.example.game.GameHooks" // the generated listing; the test sources' TestGameHooks
-    shadingShaders = listOf("weather/rain")       // this project's shaders that shade, beyond material types
 }
 ```
 
-- Hooks are numbered in a fixed order, their bits: the libraries' as their `shading-hooks.index` (shipped in the jar
-  beside the modules) numbers them, then the project's by file and place in it.
+```slang
+[ShadingHookParameters]
+public struct FogParameters
+{
+    public float3 color = float3(0.6, 0.7, 0.8);
+    public float density = 0.02;
+};
+
+[ShadingHook("game.fog")]
+[ShadingHookAfter("game.rain")]                  // ordered after another hook (or [ShadingHookBefore])
+public struct Fog : IMediaHook                   // a hook point's interface: the compiler checks its function
+{
+    public typealias Parameters = FogParameters;
+
+    public static void media(ShadingPoint p, FogParameters* fog, inout ViewRay ray) { ... }
+};
+```
+
+- **Points by interface.** A hook conforms to the interface of each hook point it has (`interface.<point>` of the
+  templates); the compiler checks the functions. A new hook point is a name in `points`, its interface, its call and
+  its function in the dispatch template.
+- **Parameters as records.** Every hook names its parameters, `typealias Parameters = X;`, X a
+  `[ShadingHookParameters]` struct of the same sources: it gets a Java record as material records do (`DEFAULTS`,
+  withers, slangc's layout, a writer, nesting other records, through `slang-records.index` too), of any size, and the
+  dispatch hands the hook a pointer to it, from where the templates say (`params`). Records also hold `uint64_t`
+  addresses the host fills (a Java `long`).
+- **Order, and no limit.** Hooks are found in a fixed order (the libraries' as their `shading-hooks.index`, shipped in
+  the jar, orders them, then the project's by file and place) and then ordered by their `[ShadingHookAfter("name")]`
+  and `[ShadingHookBefore("name")]`: a hook named by none of them is ignored, a cycle fails the build. A hook's place is
+  its index: its bool specialization constant, id `switch.first` + index (1024 on in engine-render, above any
+  shader's own constants), and its place in the engine's per-view data. There is no limit on the hooks.
 - Generated from the templates of a `shading-hooks` directory, in the sources or a library's (engine-render ships
-  them): `hooks.properties` (the hook `points`, each one's `call.<point>`, the `case` wrapping a hook's call with
-  `{call}`, `{struct}`, `{index}`, `{bit}` and `{name}`, the hooks' `constant` name, `hooks.max`, and `typeEntries`,
-  the material-type entry-point templates that shade), `dispatch.slang.template` (`{imports}`, `{constants}`,
-  `{count}`, `{calls:<point>}`) written to `shading-hooks/dispatch.slang` on the include path of every project seeing
-  the templates, and `Hooks.java.template` (`{package}`, `{class}`, `{names}`, `{replaced}`). The plugin itself knows
-  no engine.
-- A library's shaders are compiled in its own build, with the hooks it knows. A project with `slang.shadingHooks`
-  rebuilds its libraries' shaders that shade with every hook it sees: each library material type's `typeEntries`
-  (`shading-hooks/<Class>/material-types/<name><Suffix>.slang`) and each shader a library lists in its
-  `slang.shadingShaders` (`shading-hooks/<Class>/<path>.hooks.slang`). The listing names the hooks by bit and pairs
-  each library shader with its variant, for the engine to load the variants instead. The project's own shaders and
-  types compile with the full dispatch anyway.
-- Fails the build: two hooks of one name (or struct name), a hook without a hook point function, more hooks than
-  `hooks.max`, hooks without `slang.shadingHooks`, and a `slang.shadingShaders` entry that is no shader of the sources.
+  them): `hooks.properties` (`points`, each one's `interface.<point>` and `call.<point>` with `{struct}` and
+  `{params}`, `params` with `{parameters}` and `{index}`, the `case` wrapping a hook's call with `{switch}`, `{call}`,
+  `{index}` and `{name}`, the hooks' `constant` name, `switch.name`, `switch.first` and `switch.declaration` (`{id}`,
+  `{name}`), and `typeEntries`, the material-type entry-point templates that shade), `dispatch.slang.template`
+  (`{imports}`, `{constants}`, `{count}`, `{switches}`, `{any}`: whether the pipeline runs any hook,
+  `{calls:<point>}`) written to `shading-hooks/dispatch.slang` on the include path of every project seeing the
+  templates, and `Hooks.java.template` (`{package}`, `{class}`, `{names}`, `{parameters}`: the records' classes,
+  `{bytes}`, `{firstSwitch}`, `{replaced}`). The plugin itself knows no engine.
+- **Libraries' shaders rebuilt.** A library's shaders are compiled in its own build, with the hooks it knows. Its
+  shaders that shade are found as they compile: those whose dependencies (slangc's depfile) include the dispatch,
+  listed in its `shading-shaders.index` beside its modules. A project with `slang.shadingHooks` rebuilds those of its
+  libraries with every hook it sees (`shading-hooks/<Class>/<path>.hooks.slang`), and each library material type's
+  `typeEntries` (`shading-hooks/<Class>/material-types/<name><Suffix>.slang`). The listing names the hooks by index
+  and pairs each library shader with its variant, for the engine to load the variants instead. The project's own
+  shaders and types compile with the full dispatch anyway.
+- Fails the build: two hooks of one name (or struct name), a hook conforming to no hook point's interface, a hook
+  without parameters or with parameters that are no `[ShadingHookParameters]` record of the sources, hooks ordered in
+  a cycle, and hooks without `slang.shadingHooks`.
 
 See engine-render's README ("Writing a shading hook") for the hook points and the Java side.
 

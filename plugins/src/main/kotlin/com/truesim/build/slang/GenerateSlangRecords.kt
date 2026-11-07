@@ -40,7 +40,8 @@ import javax.inject.Inject
  * - the `[ParticleModule("name")]` structs of the sources and their libraries are collected into one interpreting
  *   kernel's dispatch and the Java class [particleModules] listing them ([ParticleModules]);
  * - the `[ShadingHook("name")]` structs of the sources and their libraries are merged into one dispatch, and with
- *   [shadingHooks] a Java class listing them and variants of the libraries' shaders that shade ([ShadingHooks]);
+ *   [shadingHooks] a Java class listing them and variants of the libraries' shaders that shade ([ShadingHooks]); a
+ *   `[ShadingHookParameters]` struct, a hook's parameters, becomes a Java record as material records do;
  *
  * - a struct of a `[[vk::push_constant]] ConstantBuffer<S>` block becomes a Java class `S` in [pushPackage] (or
  *   [javaPackage]): the bytes the block takes and each field's byte offset (nested structs' fields by path), from
@@ -116,13 +117,6 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
     @get:Optional
     abstract val shadingHooks: Property<String>
 
-    /**
-     * The shaders of the sources that shade (paths without `.slang`, e.g. `ao/ao`): projects using this one as a
-     * library rebuild them with their hooks. Material types' entry points need not be named.
-     */
-    @get:Input
-    abstract val shadingShaders: ListProperty<String>
-
     /** Whether to mark the generated classes `@AllowAllocation` (with truesim.allocation-free): records allocate. */
     @get:Input
     abstract val allowAllocation: Property<Boolean>
@@ -154,11 +148,13 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 "Particle modules need slang.particleModules, the generated Java class listing them")
             modules.generate(listing, javaOut, slangOut).joinToString("\n", postfix = "\n")
         })
-        // The shading hooks' dispatch too: the shading modules include it
+        // The records first (material and shading hook parameters: the hooks' dispatch loads theirs field by field),
+        // then the shading hooks' dispatch (modules with push constants include it through the shading), then layouts
+        val reflected = records(root, declared, javaOut, slangOut, index)
         File(indexOut, ShadingHooks.INDEX).writeText(ShadingHooks(root, includes.files)
-            .generate(shadingHooks.orNull, shadingShaders.get(), declared.types.map {
+            .generate(shadingHooks.orNull, declared.types.map {
                 ShadingHooks.Type(it.name, it.struct, it.module)
-            }, javaOut, slangOut).joinToString("") { "$it\n" })
+            }, reflected, readIndexes(), javaPackage.orNull, javaOut, slangOut).joinToString("") { "$it\n" })
         val layoutPackage = pushPackage.orNull ?: javaPackage.orNull
         layoutPackage?.let { pkg ->
             writeLayouts(root, declared.pushes, pkg, javaOut, false)
@@ -169,12 +165,20 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
                 ?: throw IllegalStateException("slang.constantModules need slang.pushPackage or slang.javaPackage")
             constantModules.get().forEach { writeConstants(root, it, pkg, javaOut) }
         }
+    }
+
+    /**
+     * The records' Java, the material types' entry points and Java, and the records' index; returns the records as
+     * slangc lays them out (none without records).
+     */
+    private fun records(root: File, declared: Declared, javaOut: File, slangOut: File, index: File):
+        Map<String, Struct> {
         if (declared.records.isEmpty() && declared.types.isEmpty()) {
             index.writeText("")
-            return
+            return emptyMap()
         }
         val pkg = javaPackage.orNull ?: throw IllegalStateException((declared.records.firstOrNull()
-            ?.let { "${it.file}: the material record ${it.name}" }
+            ?.let { "${it.file}: the record ${it.name}" }
             ?: declared.types.first().let { "${it.file}: the material type ${it.struct}" }) +
             " needs slang.javaPackage, the generated Java's package: set it in the slang { } block")
         val library = readIndexes()
@@ -217,7 +221,9 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             File(javaOut, pkg.replace('.', '/') + "/${type.struct}.java").apply { parentFile.mkdirs() }.writeText(source)
         }
         index.writeText(records.joinToString("\n", postfix = "\n"))
+        return reflected
     }
+
 
     // ------------------------------------------------------------------------------------------------ the sources
 
@@ -251,7 +257,11 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             val module = file.relativeTo(root).invariantSeparatorsPath.removeSuffix(".slang").replace('/', '.')
             val hidden = internalByDefault(text)
             for (match in RECORD.findAll(text)) {
-                val kind = if (match.groupValues[1] == "MaterialParameters") "parameters" else "feature"
+                val kind = when (match.groupValues[1]) {
+                    "MaterialParameters" -> "parameters"
+                    "ShadingHookParameters" -> "hook"
+                    else -> "feature"
+                }
                 val name = match.groupValues[3]
                 checkPublic(file, module, match.groupValues[1], name, hidden && match.groupValues[2].isEmpty())
                 val fields = explained(file) { declarations(name, body(text, match.range.last)) }
@@ -820,7 +830,7 @@ abstract class GenerateSlangRecords @Inject constructor(private val exec: ExecOp
             "true", "false", "null", "var", "record", "yield")
         private val ATTRIBUTE = Regex("\\[[^\\]]*]")
         private val RECORD = Regex(
-            "\\[(MaterialParameters|MaterialFeature)(?:\\([^)]*\\))?]\\s*(?:\\[[^\\]]*]\\s*)*(public\\s+)?" +
+            "\\[(MaterialParameters|MaterialFeature|ShadingHookParameters)(?:\\([^)]*\\))?]\\s*(?:\\[[^\\]]*]\\s*)*(public\\s+)?" +
                 "struct\\s+(\\w+)[^{;]*\\{")
         private val TYPE = Regex(
             "\\[MaterialType\\(\"(\\w+)\"\\)]\\s*(?:\\[[^\\]]*]\\s*)*(public\\s+)?struct\\s+(\\w+)[^{;]*\\{")

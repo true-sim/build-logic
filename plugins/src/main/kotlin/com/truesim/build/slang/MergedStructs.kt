@@ -15,11 +15,11 @@ internal object MergedStructs {
     /**
      * A marked struct of the sources: [name] the marker's argument, [struct] its Slang name, [module] the module
      * declaring it (its path with dots), [attributes] its attribute text, [functions] those of its own scope, [body]
-     * its body with its nested scopes emptied to `{}`.
+     * its body with its nested scopes emptied to `{}`, [conforms] the interfaces it names (`struct S : IA, IB`).
      */
     class Declared(
         val name: String, val struct: String, val module: String, val attributes: String,
-        val functions: Set<String>, val body: String,
+        val functions: Set<String>, val body: String, val conforms: List<String> = emptyList(),
     )
 
     /**
@@ -40,7 +40,9 @@ internal object MergedStructs {
                 val struct = match.groupValues[2]
                 val flat = flat(text, match.range.last, struct)
                 val functions = FUNCTION.findAll(flat).map { it.groupValues[1] }.toSet()
-                result += Declared(name, struct, module, attributes, functions, flat)
+                val conforms = match.groupValues[3].substringAfter(':', "").split(',').map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                result += Declared(name, struct, module, attributes, functions, flat, conforms)
             }
         }
         return result
@@ -106,7 +108,7 @@ internal object MergedStructs {
     fun constant(name: String): String =
         name.replace('.', '_').replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").uppercase()
 
-    private val STRUCT = Regex("((?:\\[[^\\]]*]\\s*)+)(?:public\\s+)?struct\\s+(\\w+)[^{;]*\\{")
+    private val STRUCT = Regex("((?:\\[[^\\]]*]\\s*)+)(?:public\\s+)?struct\\s+(\\w+)([^{;]*)\\{")
 
     /** A function of the struct's (its body emptied): name, generic parameters, parameters, body. */
     private val FUNCTION = Regex("(\\w+)\\s*(?:<[^>]*>)?\\s*\\([^(){};]*\\)\\s*\\{}")

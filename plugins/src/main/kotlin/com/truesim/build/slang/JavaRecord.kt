@@ -1,22 +1,22 @@
 package com.truesim.build.slang
 
 /**
- * The Java record of one Slang material record ([GenerateSlangRecords]): fields as slangc lays them out, defaults
- * from the Slang initializers.
+ * The Java record of one Slang record ([GenerateSlangRecords]): a material type's parameters, a material feature's,
+ * or a shading hook's parameters (kind `hook`); fields as slangc lays them out, defaults from the Slang initializers.
  */
 internal class JavaRecord(
     private val pkg: String,
     private val record: GenerateSlangRecords.Record,
     private val struct: GenerateSlangRecords.Struct,
     private val javaClass: (String) -> String,
-    /** Per field of a nested record, the record's kind ("parameters", "feature"), else "". */
+    /** Per field of a nested record, the record's kind ("parameters", "feature", "hook"), else "". */
     private val nestedKinds: Map<String, String>,
     private val allowAllocation: Boolean,
 ) {
     private val name = record.name
     private val imports = sortedSetOf<String>()
 
-    private enum class Kind { F32, I32, VEC, COLOR, RECORD, BUFFER }
+    private enum class Kind { F32, I32, U64, VEC, COLOR, RECORD, BUFFER }
 
     private class Member(
         val field: GenerateSlangRecords.Field,
@@ -45,10 +45,15 @@ internal class JavaRecord(
             imports += "com.truesim.engine.vulkan.DeviceBuffer"
             return Member(field, Kind.BUFFER, "DeviceBuffer", "null")
         }
+        if (field.scalar == "uint64" && field.count == 1) {
+            // An address the host fills (a graph buffer's, which no DeviceBuffer holds): a long
+            check(declared == null || declared.trim() == "0") { "$name.${field.name}: a uint64_t's default is 0" }
+            return Member(field, Kind.U64, "long", "0L")
+        }
         val float = field.scalar == "float32"
         check(float || field.scalar == "int32" || field.scalar == "uint32") {
-            "$name.${field.name}: material records hold 32-bit floats and integers, not ${field.scalar}: make it a " +
-                "float, int or uint (vectors float2 to float4)"
+            "$name.${field.name}: records hold 32-bit floats and integers, uint64_t addresses and buffers (T*), not " +
+                "${field.scalar}: make it a float, int or uint (vectors float2 to float4)"
         }
         val numbers = declared?.let { literal(field.name, it) }
         if (field.count == 1) {
@@ -108,7 +113,8 @@ internal class JavaRecord(
 
     fun source(): String {
         val parameters = record.kind == "parameters"
-        val iface = if (parameters) "MaterialParameters" else "MaterialFeature"
+        val hook = record.kind == "hook"
+        val iface = if (parameters) "MaterialParameters" else if (hook) "ShadingHookParameters" else "MaterialFeature"
         imports += "com.truesim.engine.render.$iface"
         imports += "com.truesim.engine.render.MaterialField"
         imports += "com.truesim.engine.render.MaterialValues"
@@ -121,27 +127,29 @@ internal class JavaRecord(
         val body = StringBuilder()
         val components = members.joinToString(", ") { "${it.javaType} ${it.name}" }
         body.append("/**\n * Generated from ${record.module}'s {@code $name}")
-        body.append(if (parameters) ": a material type's parameters" else ": a material feature's parameters")
+        body.append(if (parameters) ": a material type's parameters" else if (hook) ": a shading hook's parameters"
+            else ": a material feature's parameters")
         body.append(",\n * laid out as slangc lays the struct out.\n */\n")
         if (allowAllocation) {
             imports += "com.truesim.annotations.AllowAllocation"
-            body.append("@AllowAllocation(\"material records are made when materials change\")\n")
+            body.append("@AllowAllocation(\"records are made when their values change\")\n")
         }
         body.append("public record $name($components) implements $iface {\n\n")
         body.append("    private static final ValueLayout.OfFloat F32 =\n")
         body.append("        ValueLayout.JAVA_FLOAT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
         body.append("    private static final ValueLayout.OfInt I32 =\n")
         body.append("        ValueLayout.JAVA_INT_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
-        if (members.any { it.kind == Kind.BUFFER }) {
+        if (members.any { it.kind == Kind.BUFFER || it.kind == Kind.U64 }) {
             body.append("    private static final ValueLayout.OfLong I64 =\n")
             body.append("        ValueLayout.JAVA_LONG_UNALIGNED.withOrder(ByteOrder.LITTLE_ENDIAN);\n")
         }
         body.append("\n")
-        body.append("    /** Its bytes in a material's block. */\n")
+        body.append(if (hook) "    /** Its bytes in a view's hook data. */\n"
+            else "    /** Its bytes in a material's block. */\n")
         body.append("    public static final int BYTES = ${struct.bytes()};\n\n")
         body.append("    /** The Slang initializers. */\n")
         body.append("    public static final $name DEFAULTS = new $name(${members.joinToString(", ") { it.default }});\n\n")
-        if (!parameters) {
+        if (!parameters && !hook) {
             val feature = (struct.attributes["MaterialFeature"]?.firstOrNull() as Number?)?.toInt()
                 ?: throw IllegalStateException("$name: [MaterialFeature(feature)] names its feature bit")
             body.append("    /** The feature bit it is the parameters of. */\n")
@@ -180,20 +188,22 @@ internal class JavaRecord(
         body.append(members.joinToString(",\n            ", prefix = "\n            ") { fromValue(it) })
         body.append(");\n    }\n")
         body.append("\n    @Override\n    public int bytes() {\n        return BYTES;\n    }\n")
+        // this.: a field may be named as the parameters (segment, offset) are
         body.append("\n    @Override\n    public void write(MemorySegment segment, long offset) {\n")
         for (m in members) {
             val at = "offset + ${m.field.offset}"
             when (m.kind) {
-                Kind.F32 -> body.append("        segment.set(F32, $at, ${m.name});\n")
-                Kind.I32 -> body.append("        segment.set(I32, $at, ${m.name});\n")
+                Kind.F32 -> body.append("        segment.set(F32, $at, this.${m.name});\n")
+                Kind.I32 -> body.append("        segment.set(I32, $at, this.${m.name});\n")
+                Kind.U64 -> body.append("        segment.set(I64, $at, this.${m.name});\n")
                 Kind.BUFFER ->
-                    body.append("        segment.set(I64, $at, ${m.name} == null ? 0 : ${m.name}.deviceAddress());\n")
-                Kind.RECORD -> body.append("        ${m.name}.write(segment, $at);\n")
+                    body.append("        segment.set(I64, $at, this.${m.name} == null ? 0 : this.${m.name}.deviceAddress());\n")
+                Kind.RECORD -> body.append("        this.${m.name}.write(segment, $at);\n")
                 Kind.VEC, Kind.COLOR -> {
                     val parts = if (m.kind == Kind.COLOR) listOf("r", "g", "b", "a") else listOf("x", "y", "z", "w")
                     for (i in 0 until m.field.count) {
                         body.append("        segment.set(F32, offset + ${m.field.offset + 4 * i}, ")
-                        body.append("(float) ${m.name}.${parts[i]}());\n")
+                        body.append("(float) this.${m.name}.${parts[i]}());\n")
                     }
                 }
             }
@@ -201,7 +211,9 @@ internal class JavaRecord(
         body.append("    }\n")
         body.append(textures())
         body.append(buffers())
-        if (parameters) {
+        if (hook) {
+            // nothing more: a hook's parameters are its bytes
+        } else if (parameters) {
             body.append(mask())
             val features = (struct.attributes["MaterialParameters"]?.firstOrNull() as Number?)?.toInt() ?: 0
             body.append("\n    @Override\n    public int allowedFeatures() {\n        return $features;\n    }\n")
@@ -261,6 +273,7 @@ internal class JavaRecord(
         return when (m.kind) {
             Kind.RECORD -> "${m.javaType}.fromValues(values.nested(\"${m.name}\"))"
             Kind.F32 -> "values.f32(\"${m.name}\", $d)"
+            Kind.U64 -> d // addresses come from the host, never from data
             Kind.BUFFER -> "values.buffer(\"${m.name}\", $d)"
             Kind.I32 -> texture(m.field)?.let { "values.texture(\"${m.name}\", $it, $d)" }
                 ?: "values.i32(\"${m.name}\", $d)"
@@ -277,6 +290,9 @@ internal class JavaRecord(
             if (nested != null) {
                 constants(body, nested, "$path.", base + f.offset)
                 continue
+            }
+            if (f.scalar == "uint64") {
+                continue // an address the host fills: no field to set in place
             }
             val constant = path.split('.').joinToString("_") { snake(it) }
             val offset = base + f.offset
