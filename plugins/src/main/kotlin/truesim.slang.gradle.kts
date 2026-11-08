@@ -147,12 +147,6 @@ fun testName(name: String): String {
 }
 
 val testRecords = registerRecords("generateTestSlangRecords", "test", testLibraries)
-testRecords.configure {
-    includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
-    particleModules = slang.particleModules.map(::testName)
-    shadingHooks = slang.shadingHooks.map(::testName)
-    automaticShadingHooks = automaticListing.map(::testName)
-}
 
 fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<CollectSlangLibraries>,
     records: TaskProvider<GenerateSlangRecords>) =
@@ -175,6 +169,17 @@ fun registerSlang(name: String, sourceSet: String, libraries: TaskProvider<Colle
 val compileSlang = registerSlang("compileSlang", "main", mainLibraries, mainRecords)
 compileSlang.configure {
     shadingIndex = layout.buildDirectory.dir("generated/slang-shading/main") // shaders that shade, for later projects
+}
+// The test sources see the main sources as a library: their records, hooks and material types (the index) and their
+// shaders that shade (compileSlang's), so the test listing rebuilds this project's own shading with the test hooks.
+// The testRuntimeClasspath configuration holds the dependencies only, not the main output: without this a project had
+// to depend on itself (testRuntimeOnly(project(":x")), or reach itself through its test fixtures) for that.
+testRecords.configure {
+    includes.from(mainRecords.flatMap { it.indexOutput }) // the main records, for test records to nest
+    includes.from(compileSlang.flatMap { it.shadingIndex }) // the main shaders that shade
+    particleModules = slang.particleModules.map(::testName)
+    shadingHooks = slang.shadingHooks.map(::testName)
+    automaticShadingHooks = automaticListing.map(::testName)
 }
 val compileTestSlang = registerSlang("compileTestSlang", "test", testLibraries, testRecords)
 

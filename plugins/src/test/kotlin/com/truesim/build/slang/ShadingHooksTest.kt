@@ -164,6 +164,49 @@ class ShadingHooksTest {
     }
 
     @Test
+    fun `the test sources' listing rebuilds the project's own shaders that shade, with no dependency on itself`() {
+        val project = SlangProject("testHooks").project(configuration = PACKAGE)
+        engine(project, "")
+        project.slang("game/red.slang", hook("game.red", "RedHook"))
+        project.write("src/test/slang/test/blue.slang", hook("test.blue", "BlueHook"))
+        project.write("src/test/slang/test/probe.slang", """
+            import shade;
+
+            struct ProbePush
+            {
+                uint64_t* hooks;
+                float3* out;
+            };
+
+            [[vk::push_constant]]
+            ConstantBuffer<ProbePush> push;
+
+            [shader("compute")]
+            [numthreads(1, 1, 1)]
+            void probeMain()
+            {
+                push.out[0] = shade(push.hooks, float3(0, 0, 0));
+            }
+        """)
+
+        project.build("processTestResources")
+
+        val listing = project.output("generated/slang-records/test/java/com/example/TestHooks.java").readText()
+        assertThat(listing).contains("NAMES = { \"game.red\", \"test.blue\" };")
+            .contains("\"shaders/lit.spv\", \"shaders/shading-hooks/TestHooks/lit.hooks.spv\"")
+            .doesNotContain("plain")
+        assertThat(project.output("generated/slang-records/test/slang/shading-hooks/dispatch.slang").readText())
+            .contains("import game.red;").contains("import test.blue;")
+        val resources = "resources/test/shaders"
+        assertThat(project.output("$resources/shading-hooks/TestHooks/lit.hooks.spv")).`as`("the main lit, rebuilt")
+            .isFile()
+        assertThat(project.output("$resources/test/probe.spv")).`as`("a test shader importing the main modules")
+            .isFile()
+        assertThat(project.output("resources/test/META-INF/services/com.example.HookListing").readText())
+            .isEqualTo("com.example.TestHooks\n")
+    }
+
+    @Test
     fun `a shader is compiled again only when something it depends on changed`() {
         val project = SlangProject("incremental").project(configuration = "")
         engine(project, "")
