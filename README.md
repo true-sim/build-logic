@@ -385,6 +385,10 @@ public struct Fog : IMediaHook                   // a hook point's interface: th
   `typeEntries` (`shading-hooks/<Class>/material-types/<name><Suffix>.slang`). The listing names the hooks by index
   and pairs each library shader with its variant, for the engine to load the variants instead. The project's own
   shaders and types compile with the full dispatch anyway.
+- **Test hooks.** The test sources (`src/test/slang`) see the main sources as a library: their hooks, records, material
+  types and shaders that shade. So the test listing (`Test<Class>`) rebuilds the project's own shading with the
+  test hooks too, with no dependency of the tests on the project itself (`testRuntimeOnly(project(":x"))` is not
+  needed).
 - Fails the build: two hooks of one name (or struct name), a hook conforming to no hook point's interface, a hook
   without parameters or with parameters that are no `[ShadingHookParameters]` record of the sources, hooks ordered in
   a cycle, and hooks without `slang.shadingHooks` or `slang.javaPackage` (the listing's package).
